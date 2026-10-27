@@ -196,13 +196,27 @@ fn close_snip_windows(app: &AppHandle) {
     }
 }
 
+/// Stores the capture, then opens its overlays. The capture must be in place first: an
+/// overlay can finish loading and ask for its picture before the next one is even built.
+fn start_snip(app: &AppHandle, s: snip::Snip) -> Result<(), String> {
+    close_snip_windows(app);
+    let geometry: Vec<(i32, i32, u32, u32)> =
+        s.shots.iter().map(|sh| (sh.monitor_x, sh.monitor_y, sh.image.width(), sh.image.height())).collect();
+    *app.state::<AppState>().snip.lock().unwrap() = Some(s);
+    let opened = open_snip_windows(app, &geometry);
+    if opened.is_err() {
+        app.state::<AppState>().snip.lock().unwrap().take();
+        close_snip_windows(app);
+    }
+    opened
+}
+
 /// One overlay per monitor, so each matches its monitor's scaling exactly. The one under
 /// the cursor gets the keyboard focus.
-fn open_snip_windows(app: &AppHandle, s: &snip::Snip) -> Result<(), String> {
-    close_snip_windows(app);
+fn open_snip_windows(app: &AppHandle, monitors: &[(i32, i32, u32, u32)]) -> Result<(), String> {
     let cursor = app.cursor_position().ok();
     let mut focus = None;
-    for (i, shot) in s.shots.iter().enumerate() {
+    for (i, &(mx, my, mw, mh)) in monitors.iter().enumerate() {
         let win = WebviewWindowBuilder::new(app, format!("snip-{i}"), WebviewUrl::App("index.html".into()))
             .title("ContextLens 擷取")
             .decorations(false)
@@ -213,13 +227,19 @@ fn open_snip_windows(app: &AppHandle, s: &snip::Snip) -> Result<(), String> {
             .visible(false)
             .build()
             .map_err(|e| e.to_string())?;
-        // Physical units, so the overlay covers the captured monitor pixel for pixel.
-        let _ = win.set_position(PhysicalPosition::new(shot.monitor_x, shot.monitor_y));
-        let _ = win.set_size(PhysicalSize::new(shot.image.width(), shot.image.height()));
+        // Physical units, so the overlay covers the captured monitor pixel for pixel. Moving
+        // onto a monitor with other scaling makes Windows resize the window for the new DPI,
+        // so place it again once it is there and shown.
+        let place = |w: &WebviewWindow| {
+            let _ = w.set_position(PhysicalPosition::new(mx, my));
+            let _ = w.set_size(PhysicalSize::new(mw, mh));
+        };
+        place(&win);
         let _ = win.show();
+        place(&win);
         let under_cursor = cursor.is_some_and(|c| {
-            let (x, y) = (c.x as i32 - shot.monitor_x, c.y as i32 - shot.monitor_y);
-            x >= 0 && y >= 0 && (x as u32) < shot.image.width() && (y as u32) < shot.image.height()
+            let (x, y) = (c.x as i32 - mx, c.y as i32 - my);
+            x >= 0 && y >= 0 && (x as u32) < mw && (y as u32) < mh
         });
         if under_cursor || focus.is_none() {
             focus = Some(win);
@@ -364,6 +384,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 fn trigger(app: AppHandle, hotkey: Hotkey) {
     tauri::async_runtime::spawn(async move {
         let (tutor, task) = (hotkey.tutor, hotkey.task);
+        let preset = hotkey.live_sources.clone();
         let failed = |message: String| Capture { tutor, task, error: Some(message), ..Default::default() };
         match hotkey.source {
             Source::Selection => {
@@ -388,18 +409,31 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
                     stop_live(&app);
                 } else {
                     open_live_window(&app);
-                    let sources = app.state::<AppState>().live_sources.lock().unwrap().clone();
-                    if let Err(e) = start_live(&app, sources, tutor) {
-                        live_status(&app, "error", Some(e));
+                    let state = app.state::<AppState>();
+                    let mut sources = if preset.is_empty() { state.live_sources.lock().unwrap().clone() } else { preset };
+                    // The screen needs a region first: start the rest, then let the user pick it.
+                    // Picking adds the screen to the running session.
+                    let pick = sources.contains(&live::LiveSource::Screen) && state.live_screen.lock().unwrap().is_none();
+                    if pick {
+                        sources.retain(|s| *s != live::LiveSource::Screen);
+                    }
+                    if !sources.is_empty() {
+                        if let Err(e) = start_live(&app, sources, tutor) {
+                            live_status(&app, "error", Some(e));
+                        }
+                    }
+                    if pick {
+                        let taken = blocking(|| snip::take(false, Task::Translate, snip::Purpose::LiveTarget)).await;
+                        if let Err(e) = taken.and_then(|s| start_snip(&app, s)) {
+                            live_status(&app, "error", Some(e));
+                        }
                     }
                 }
             }
             Source::Screen => {
                 match blocking(move || snip::take(tutor, task, snip::Purpose::Translate)).await {
                     Ok(s) => {
-                        let opened = open_snip_windows(&app, &s);
-                        *app.state::<AppState>().snip.lock().unwrap() = Some(s);
-                        if let Err(e) = opened {
+                        if let Err(e) = start_snip(&app, s) {
                             show_popup(&app, failed(e));
                         }
                     }
@@ -1023,9 +1057,7 @@ fn open_live(app: AppHandle) {
 #[tauri::command]
 async fn live_pick_screen(app: AppHandle) -> Result<(), String> {
     let s = blocking(move || snip::take(false, Task::Translate, snip::Purpose::LiveTarget)).await?;
-    open_snip_windows(&app, &s)?;
-    *app.state::<AppState>().snip.lock().unwrap() = Some(s);
-    Ok(())
+    start_snip(&app, s)
 }
 
 /// Closing the caption bar ends the session; Live is billed while it runs.

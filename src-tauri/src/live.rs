@@ -8,7 +8,7 @@ use contextlens_core::live::{self, Backend, LiveConfig, Resampler, ScreenMode, S
 use contextlens_core::{ChatRequest, Delta, HistoryEntry, Media, Provider, Task};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc};
@@ -17,21 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveSource {
-    Mic,
-    /// What the speakers play (WASAPI loopback). Windows only for now.
-    System,
-    /// A region, window or monitor, sent as frames.
-    Screen,
-}
-
-impl LiveSource {
-    fn is_audio(self) -> bool {
-        self != LiveSource::Screen
-    }
-}
+pub use contextlens_core::LiveSource;
 
 /// The part of the screen a Live session watches, in physical pixels relative to its monitor.
 #[derive(Serialize, Clone, Debug)]

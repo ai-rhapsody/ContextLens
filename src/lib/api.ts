@@ -17,6 +17,8 @@ export interface Hotkey {
   source: Source;
   task: Task;
   tutor: boolean;
+  /** Live hotkeys: what to start with; empty means what was used last. */
+  live_sources?: LiveSource[];
 }
 
 export interface Settings {

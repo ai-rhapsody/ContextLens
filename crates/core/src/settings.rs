@@ -57,6 +57,23 @@ pub enum Task {
     Search,
 }
 
+/// What a Live session listens to or watches.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveSource {
+    Mic,
+    /// What the speakers play (WASAPI loopback). Windows only for now.
+    System,
+    /// A region, window or monitor, sent as frames.
+    Screen,
+}
+
+impl LiveSource {
+    pub fn is_audio(self) -> bool {
+        self != LiveSource::Screen
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(from = "HotkeyWire")]
 pub struct Hotkey {
@@ -67,6 +84,8 @@ pub struct Hotkey {
     pub task: Task,
     /// Explain structure, usage and background as well as translating.
     pub tutor: bool,
+    /// For a Live hotkey: what to start with. Empty means whatever was used last.
+    pub live_sources: Vec<LiveSource>,
 }
 
 /// Accepts the current shape and the 0.1 shape (`action: translate_selection | tutor_selection`).
@@ -78,6 +97,8 @@ struct HotkeyWire {
     task: Option<Task>,
     tutor: Option<bool>,
     action: Option<String>,
+    #[serde(default)]
+    live_sources: Vec<LiveSource>,
 }
 
 impl From<HotkeyWire> for Hotkey {
@@ -89,6 +110,7 @@ impl From<HotkeyWire> for Hotkey {
             source: w.source.unwrap_or(Source::Selection),
             task: w.task.unwrap_or_default(),
             tutor: w.tutor.unwrap_or(legacy_tutor),
+            live_sources: w.live_sources,
         }
     }
 }
@@ -153,6 +175,7 @@ impl Default for Settings {
             source,
             task: Task::Translate,
             tutor,
+            live_sources: vec![],
         };
         Self {
             target_language: "繁體中文".into(),

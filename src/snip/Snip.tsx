@@ -22,7 +22,13 @@ export function Snip() {
   };
 
   useEffect(() => {
-    snipView().then(setView).catch((e) => setError(String(e)));
+    // The capture is stored before overlays open; retry briefly anyway in case one loads early.
+    let alive = true;
+    const load = (tries: number) => snipView().then((v) => alive && setView(v)).catch((e) => {
+      if (alive && tries > 0 && String(e).includes("沒有進行中")) setTimeout(() => load(tries - 1), 100);
+      else if (alive) setError(String(e));
+    });
+    load(10);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") cancelSnip();
       if (e.key === "1") pickMode("region");
@@ -32,6 +38,7 @@ export function Snip() {
     window.addEventListener("keydown", onKey);
     const un = listen<Mode>("snip-mode", ({ payload }) => { setMode(payload); setHover(null); });
     return () => {
+      alive = false;
       window.removeEventListener("keydown", onKey);
       un.then((f) => f());
     };

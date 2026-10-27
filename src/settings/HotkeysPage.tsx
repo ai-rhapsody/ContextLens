@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  providerInfo, PROVIDERS, TASKS, type Hotkey, type ProviderInfo, type Settings, type Source, type Task,
+  providerInfo, PROVIDERS, TASKS, type Hotkey, type LiveSource, type ProviderInfo, type Settings, type Source,
+  type Task,
 } from "../lib/api";
 import { eventToAccelerator, prettyAccelerator } from "../lib/hotkey";
 
@@ -9,6 +10,12 @@ const SOURCES: { id: Source; label: string; needsImage: boolean }[] = [
   { id: "selection", label: "選取的文字", needsImage: false },
   { id: "clipboard_image", label: "剪貼簿圖片", needsImage: true },
   { id: "live", label: "Live 即時翻譯（開／關）", needsImage: false },
+];
+
+const LIVE_SOURCES: { id: LiveSource; label: string }[] = [
+  { id: "mic", label: "麥克風" },
+  { id: "system", label: "系統聲音" },
+  { id: "screen", label: "螢幕" },
 ];
 
 function Recorder({ value, onPick }: { value: string; onPick: (acc: string) => void }) {
@@ -101,6 +108,32 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
                   onClick={() => commit({ ...settings, hotkeys: settings.hotkeys.filter((x) => x.id !== h.id) })}
                 >刪除</button>
               </div>
+              {isLive && (
+                <div className="row hk-live">
+                  <span className="hint">按下時開啟</span>
+                  <div className="lv-sources" role="group" aria-label="Live 來源">
+                    {LIVE_SOURCES.map((src) => {
+                      const on = (h.live_sources ?? []).includes(src.id);
+                      return (
+                        <button
+                          key={src.id} aria-pressed={on}
+                          onClick={() => {
+                            const cur = h.live_sources ?? [];
+                            patch(h.id, { live_sources: on ? cur.filter((x) => x !== src.id) : [...cur, src.id] });
+                          }}
+                        >{src.label}</button>
+                      );
+                    })}
+                  </div>
+                  <span className="hint grow">
+                    {!(h.live_sources ?? []).length
+                      ? "沒選的話用上次在字幕列選的來源。"
+                      : (h.live_sources ?? []).includes("screen")
+                        ? "還沒選過螢幕範圍時，按下後會先讓你框選。"
+                        : ""}
+                  </span>
+                </div>
+              )}
               {noImage && (
                 <div className="row-note">
                   目前的模型（{name} · {current!.model}）不能讀取圖片。按下時會提供改用其他服務的選項。

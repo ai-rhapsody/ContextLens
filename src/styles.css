@@ -342,3 +342,5 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 .lv-acts button[aria-pressed="true"] { color: var(--pill-warning-ink); border-color: transparent; }
 .lv-turn.starred:not(.now) { opacity: 1; }
 h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; margin: 28px 0 4px; }
+.hk-live { min-height: 0; padding-top: 0; margin-top: -6px; }
+.hk .row + .row.hk-live { border-top: 0; }
