@@ -13,6 +13,20 @@ function windowLabel(): string {
   }
 }
 
+// If anything fails before or during the first render, show it instead of an empty window.
+function showFatal(message: string) {
+  const root = document.getElementById("root");
+  if (root && !root.childElementCount) {
+    root.innerHTML = "";
+    const box = document.createElement("pre");
+    box.className = "boot";
+    box.textContent = `ContextLens 無法啟動：\n${message}`;
+    root.appendChild(box);
+  }
+}
+window.addEventListener("error", (e) => showFatal(String(e.error ?? e.message)));
+window.addEventListener("unhandledrejection", (e) => showFatal(String(e.reason)));
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>{windowLabel() === "popup" ? <Popup /> : <SettingsApp />}</React.StrictMode>,
 );

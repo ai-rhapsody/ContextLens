@@ -79,6 +79,9 @@ kbd {
   border: 1px solid var(--control); background: var(--surface); white-space: nowrap;
 }
 
+/* first paint, loading and fatal errors */
+.boot { margin: 0; padding: var(--pad); color: var(--muted); white-space: pre-wrap; user-select: text; font: inherit; }
+
 /* ---------- settings window ---------- */
 .shell { display: grid; grid-template-columns: 200px 1fr; height: 100%; }
 .nav { padding: 16px 12px; border-right: 1px solid var(--border); background: var(--ground); display: flex; flex-direction: column; gap: 2px; }

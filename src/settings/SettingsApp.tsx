@@ -20,7 +20,10 @@ export function SettingsApp() {
   const [status, setStatus] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [update, setUpdate] = useState<UpdateState>({ phase: "idle" });
 
-  useEffect(() => { getSettings().then(setSettings); }, []);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    getSettings().then(setSettings).catch((e) => setLoadError(String(e)));
+  }, []);
 
   // Quiet check at start: failures (offline, unsigned dev build) stay silent.
   useEffect(() => {
@@ -44,7 +47,13 @@ export function SettingsApp() {
     return () => clearTimeout(t);
   }, [status]);
 
-  if (!settings) return null;
+  if (!settings) {
+    return (
+      <div className="boot" role={loadError ? "alert" : "status"}>
+        {loadError ? <>無法載入設定：{loadError}</> : "載入中…"}
+      </div>
+    );
+  }
 
   return (
     <div className="shell">
