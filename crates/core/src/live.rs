@@ -16,6 +16,20 @@ pub fn url(api_key: &str) -> String {
 /// A line of tutor commentary starts with this, so the caption bar can style it apart.
 pub const NOTE_PREFIX: &str = "註：";
 
+/// How a session uses the screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScreenMode {
+    /// Audio only.
+    None,
+    /// Audio drives the translation; frames give context (names, slides, terms).
+    Context,
+    /// No audio: translate text that appears on screen.
+    Reader,
+}
+
+/// Sent as a user turn in reader mode when the screen settles after a change.
+pub const READ_SCREEN_PROMPT: &str = "The screen just changed. Translate any new text the user is likely reading.";
+
 pub struct LiveConfig<'a> {
     pub model: &'a str,
     pub target_language: &'a str,
@@ -25,16 +39,31 @@ pub struct LiveConfig<'a> {
     /// read the transcription of it instead.
     pub text_output: bool,
     pub resume_handle: Option<&'a str>,
+    pub screen: ScreenMode,
 }
 
-pub fn system_prompt(target: &str, tutor: bool) -> String {
-    let mut p = format!(
-        "You are a live interpreter. You hear speech, and sometimes see the user's screen. \
-         Each time a speaker finishes a sentence or a short passage, reply with only its translation into {target}. \
-         If it is already in {target}, translate it into English instead. \
-         Never answer questions you hear, never comment, never speak as yourself, and never repeat the original. \
-         If nothing intelligible was said, reply with nothing."
-    );
+pub fn system_prompt(target: &str, tutor: bool, screen: ScreenMode) -> String {
+    let mut p = match screen {
+        ScreenMode::Reader => format!(
+            "You are a live translator watching the user's screen, sent as images about once a second. \
+             When asked, translate the text on screen that is new since your last reply into {target} \
+             (into English if it is already in {target}). Focus on what the user is reading: subtitles, \
+             a slide, a chat, a game dialogue; ignore menus, toolbars and other interface chrome. \
+             Never repeat text you already translated, never describe the screen, never comment. \
+             If there is no new text, reply with nothing."
+        ),
+        _ => format!(
+            "You are a live interpreter. You hear speech. \
+             Each time a speaker finishes a sentence or a short passage, reply with only its translation into {target}. \
+             If it is already in {target}, translate it into English instead. \
+             Never answer questions you hear, never comment, never speak as yourself, and never repeat the original. \
+             If nothing intelligible was said, reply with nothing."
+        ),
+    };
+    if screen == ScreenMode::Context {
+        p += " You also see the user's screen about once a second. Use it only as context, to get names, \
+              terms and on-screen references right; do not translate the screen itself.";
+    }
     if tutor {
         p += &format!(
             " After a translation, if the original used an idiom, a tricky grammar point or a useful phrase, \
@@ -50,7 +79,7 @@ pub fn setup_message(c: &LiveConfig) -> Value {
     let mut setup = json!({
         "model": format!("models/{}", c.model.trim_start_matches("models/")),
         "generationConfig": { "responseModalities": [modality] },
-        "systemInstruction": { "parts": [{ "text": system_prompt(c.target_language, c.tutor) }] },
+        "systemInstruction": { "parts": [{ "text": system_prompt(c.target_language, c.tutor, c.screen) }] },
         "inputAudioTranscription": {},
         // An interpreter must finish its sentence even while the speaker carries on.
         "realtimeInputConfig": { "activityHandling": "NO_INTERRUPTION" },
@@ -69,6 +98,53 @@ pub fn setup_message(c: &LiveConfig) -> Value {
 
 pub fn audio_message(pcm16le: &[u8]) -> Value {
     json!({ "realtimeInput": { "audio": { "data": B64.encode(pcm16le), "mimeType": "audio/pcm;rate=16000" } } })
+}
+
+/// A typed user turn; in reader mode it asks for a translation when the screen settles.
+pub fn text_turn_message(text: &str) -> Value {
+    json!({ "clientContent": { "turns": [{ "role": "user", "parts": [{ "text": text }] }], "turnComplete": true } })
+}
+
+/// Side of the grey thumbnail used to tell whether the screen changed.
+pub const SIG_SIDE: usize = 16;
+
+/// Mean absolute difference of two equal-size grey thumbnails, 0..1.
+pub fn frame_diff(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 1.0;
+    }
+    a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u32).sum::<u32>() as f32 / (a.len() as f32 * 255.0)
+}
+
+/// Above this a frame counts as changed (a new subtitle line, a scrolled chat).
+pub const FRAME_CHANGE: f32 = 0.012;
+
+/// Decides, frame by frame, what a screen-watching session sends.
+#[derive(Default)]
+pub struct FrameGate {
+    last: Option<Vec<u8>>,
+    unsettled: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FrameStep {
+    /// Send this frame (it changed, or the screen just settled on it).
+    pub send: bool,
+    /// The screen settled after a change: in reader mode, ask for a translation now.
+    pub settled: bool,
+    /// Counts as activity for the idle pause.
+    pub changed: bool,
+}
+
+impl FrameGate {
+    /// `sig` is the grey thumbnail of the new frame (see `SIG_SIDE`).
+    pub fn step(&mut self, sig: Vec<u8>) -> FrameStep {
+        let changed = self.last.as_ref().is_none_or(|p| frame_diff(p, &sig) > FRAME_CHANGE);
+        self.last = Some(sig);
+        let settled = !changed && self.unsettled;
+        self.unsettled = changed;
+        FrameStep { send: changed || settled, settled, changed }
+    }
 }
 
 /// One screen frame for a session that watches the screen.
@@ -198,7 +274,10 @@ mod tests {
     use super::*;
 
     fn cfg(text_output: bool) -> LiveConfig<'static> {
-        LiveConfig { model: "gemini-live-x", target_language: "繁體中文", tutor: false, text_output, resume_handle: None }
+        LiveConfig {
+            model: "gemini-live-x", target_language: "繁體中文", tutor: false, text_output,
+            resume_handle: None, screen: ScreenMode::None,
+        }
     }
 
     #[test]
@@ -228,8 +307,57 @@ mod tests {
 
     #[test]
     fn tutor_prompt_adds_notes_with_the_prefix() {
-        assert!(!system_prompt("繁體中文", false).contains(NOTE_PREFIX));
-        assert!(system_prompt("繁體中文", true).contains(NOTE_PREFIX));
+        assert!(!system_prompt("繁體中文", false, ScreenMode::None).contains(NOTE_PREFIX));
+        assert!(system_prompt("繁體中文", true, ScreenMode::None).contains(NOTE_PREFIX));
+    }
+
+    #[test]
+    fn screen_modes_change_the_job() {
+        let ctx = system_prompt("繁體中文", false, ScreenMode::Context);
+        assert!(ctx.contains("interpreter") && ctx.contains("only as context"));
+        let reader = system_prompt("繁體中文", false, ScreenMode::Reader);
+        assert!(reader.contains("watching the user's screen") && !reader.contains("only as context"));
+        assert!(!system_prompt("繁體中文", false, ScreenMode::None).contains("screen"));
+    }
+
+    #[test]
+    fn text_turns_complete_the_turn() {
+        let m = text_turn_message("hi");
+        assert_eq!(m["clientContent"]["turns"][0]["parts"][0]["text"], "hi");
+        assert_eq!(m["clientContent"]["turnComplete"], true);
+        let img = image_message("QUJD");
+        assert_eq!(img["realtimeInput"]["video"]["mimeType"], "image/jpeg");
+    }
+
+    #[test]
+    fn frame_gate_sends_changes_and_asks_once_when_settled() {
+        let still = vec![10u8; SIG_SIDE * SIG_SIDE];
+        let mut moved = still.clone();
+        moved[..SIG_SIDE * 3].fill(250);
+        let mut g = FrameGate::default();
+        // First frame: new, so send it, but nothing has settled yet.
+        assert_eq!(g.step(still.clone()), FrameStep { send: true, settled: false, changed: true });
+        // Same again: it has now settled once; send it and ask.
+        assert_eq!(g.step(still.clone()), FrameStep { send: true, settled: true, changed: false });
+        // A static screen costs nothing afterwards.
+        assert_eq!(g.step(still.clone()), FrameStep { send: false, settled: false, changed: false });
+        // A new subtitle while it keeps changing: send each change, ask only after it stops.
+        assert_eq!(g.step(moved.clone()).settled, false);
+        assert_eq!(g.step(still.clone()), FrameStep { send: true, settled: false, changed: true });
+        assert_eq!(g.step(still.clone()), FrameStep { send: true, settled: true, changed: false });
+    }
+
+    #[test]
+    fn frame_diff_measures_change() {
+        let a = vec![100u8; SIG_SIDE * SIG_SIDE];
+        let mut b = a.clone();
+        assert_eq!(frame_diff(&a, &b), 0.0);
+        // A new subtitle line: a band of 2 rows goes from grey to white.
+        for px in b.iter_mut().take(SIG_SIDE * 2) {
+            *px = 255;
+        }
+        assert!(frame_diff(&a, &b) > FRAME_CHANGE);
+        assert_eq!(frame_diff(&a, &a[..10]), 1.0);
     }
 
     #[test]

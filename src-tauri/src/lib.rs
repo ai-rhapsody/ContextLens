@@ -44,6 +44,8 @@ struct AppState {
     live: Mutex<Option<live::LiveHandle>>,
     /// Sources of the last Live session, reused when a hotkey starts the next one.
     live_sources: Mutex<Vec<live::LiveSource>>,
+    /// The screen area Live watches when the screen source is on.
+    live_screen: Mutex<Option<live::ScreenTarget>>,
     http: contextlens_core::reqwest::Client,
 }
 
@@ -192,8 +194,10 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
         old.stop();
     }
     if sources.is_empty() {
-        return Err("至少要開一個聲音來源。".into());
+        return Err("至少要開一個來源。".into());
     }
+    // Remember the choice even if starting fails, so "開始" retries it once the problem is fixed.
+    *state.live_sources.lock().unwrap() = sources.clone();
     let (model, target_language, idle_minutes) = {
         let s = state.settings.lock().unwrap();
         (s.models.gemini_live.clone(), s.target_language.clone(), s.live_idle_minutes)
@@ -203,10 +207,16 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
     }
     let api_key = secrets::get(Provider::Gemini)
         .ok_or("Live 模式使用 Gemini，還沒設定 Gemini 的 API 金鑰。")?;
-    *state.live_sources.lock().unwrap() = sources.clone();
+    let watches_screen = sources.contains(&live::LiveSource::Screen);
+    let screen = state.live_screen.lock().unwrap().clone();
+    // Keep the caption bar out of the frames, so the model never reads its own captions
+    // (Windows 10 2004+ and macOS honour this).
+    if let Some(w) = app.get_webview_window("live") {
+        let _ = w.set_content_protected(watches_screen);
+    }
     let handle = live::start(
         app.clone(),
-        live::StartArgs { sources, tutor, model, target_language, api_key, idle_minutes },
+        live::StartArgs { sources, tutor, model, target_language, api_key, idle_minutes, screen },
     )?;
     *state.live.lock().unwrap() = Some(handle);
     Ok(())
@@ -268,7 +278,7 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
             }
             Source::Screen => {
                 let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
-                match blocking(move || snip::take(x, y, tutor)).await {
+                match blocking(move || snip::take(x, y, tutor, snip::Purpose::Translate)).await {
                     Ok(s) => {
                         let opened = open_snip_window(&app, &s);
                         *app.state::<AppState>().snip.lock().unwrap() = Some(s);
@@ -386,9 +396,36 @@ fn snip_view(state: State<AppState>) -> Result<snip::SnipView, String> {
 }
 
 #[tauri::command]
-async fn finish_snip(app: AppHandle, rect: snip::Rect) -> Result<(), String> {
+async fn finish_snip(app: AppHandle, rect: snip::Rect, label: Option<String>) -> Result<(), String> {
     let s = app.state::<AppState>().snip.lock().unwrap().take().ok_or("沒有進行中的擷取")?;
     close_snip_window(&app);
+    if s.purpose == snip::Purpose::LiveTarget {
+        let (x, y, w, h) = snip::clamp(rect, s.image.width(), s.image.height()).ok_or("選取範圍太小")?;
+        let target = live::ScreenTarget {
+            monitor_x: s.monitor_x,
+            monitor_y: s.monitor_y,
+            x, y, w, h,
+            label: label.unwrap_or_else(|| format!("區域 {w}×{h}")),
+        };
+        let state = app.state::<AppState>();
+        *state.live_screen.lock().unwrap() = Some(target);
+        // Restart with the screen added to whatever was already on.
+        let mut sources = match state.live.lock().unwrap().as_ref() {
+            Some(h) => h.sources.clone(),
+            None => state.live_sources.lock().unwrap().clone(),
+        };
+        if !sources.contains(&live::LiveSource::Screen) {
+            sources.push(live::LiveSource::Screen);
+        }
+        let tutor = state.live.lock().unwrap().as_ref().is_some_and(|h| h.tutor);
+        open_live_window(&app);
+        let app2 = app.clone();
+        if let Err(e) = blocking(move || start_live(&app2, sources, tutor)).await {
+            live_status(&app, "error", Some(e));
+        }
+        let _ = app.emit_to("live", "live-changed", ()); // the caption bar re-reads its state
+        return Ok(());
+    }
     let tutor = s.tutor;
     let capture = match blocking(move || snip::crop(&s, rect)).await {
         Ok(media) => Capture { media: Some(media), tutor, ..Default::default() },
@@ -524,6 +561,8 @@ struct LiveInfo {
     model: String,
     model_ok: bool,
     system_audio: bool,
+    /// What the screen source watches, if one was picked.
+    screen: Option<String>,
 }
 
 #[tauri::command]
@@ -537,6 +576,7 @@ fn live_info(state: State<AppState>) -> LiveInfo {
         model_ok: caps::for_model(Provider::Gemini, &model).live,
         model,
         system_audio: live::SYSTEM_AUDIO_SUPPORTED,
+        screen: state.live_screen.lock().unwrap().as_ref().map(|t| t.label.clone()),
     }
 }
 
@@ -554,6 +594,16 @@ fn live_stop(app: AppHandle) {
 #[tauri::command]
 fn open_live(app: AppHandle) {
     open_live_window(&app);
+}
+
+/// Opens the snipping overlay to choose what Live watches.
+#[tauri::command]
+async fn live_pick_screen(app: AppHandle) -> Result<(), String> {
+    let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
+    let s = blocking(move || snip::take(x, y, false, snip::Purpose::LiveTarget)).await?;
+    open_snip_window(&app, &s)?;
+    *app.state::<AppState>().snip.lock().unwrap() = Some(s);
+    Ok(())
 }
 
 /// Closing the caption bar ends the session; Live is billed while it runs.
@@ -621,6 +671,7 @@ pub fn run() {
             live_stop,
             open_live,
             close_live,
+            live_pick_screen,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -634,6 +685,7 @@ pub fn run() {
                 popup_pinned: AtomicBool::new(false),
                 live: Mutex::new(None),
                 live_sources: Mutex::new(vec![live::LiveSource::Mic]),
+                live_screen: Mutex::new(None),
                 http: contextlens_core::http_client(),
             });
             if let Err(e) = register_hotkeys(&handle, &settings) {

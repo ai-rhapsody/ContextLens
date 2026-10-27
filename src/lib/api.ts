@@ -2,7 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Provider = "gemini" | "openai" | "anthropic";
 export type Source = "selection" | "screen" | "clipboard_image" | "live";
-export type LiveSource = "mic" | "system";
+export type LiveSource = "mic" | "system" | "screen";
 
 export interface Hotkey {
   id: string;
@@ -46,7 +46,10 @@ export interface HistoryEntry {
 }
 
 export interface WinRect { x: number; y: number; w: number; h: number; title: string }
-export interface SnipView { preview: string; width: number; height: number; windows: WinRect[] }
+export interface SnipView {
+  preview: string; width: number; height: number; windows: WinRect[];
+  purpose: "translate" | "live_target";
+}
 export interface Rect { x: number; y: number; w: number; h: number }
 
 export interface Caps { image: boolean; audio: boolean; video: boolean; live: boolean }
@@ -75,7 +78,7 @@ export const hidePopup = () => invoke<void>("hide_popup");
 export const setPopupPinned = (pinned: boolean) => invoke<void>("set_popup_pinned", { pinned });
 export const showSettings = () => invoke<void>("show_settings");
 export const snipView = () => invoke<SnipView>("snip_view");
-export const finishSnip = (rect: Rect) => invoke<void>("finish_snip", { rect });
+export const finishSnip = (rect: Rect, label: string | null = null) => invoke<void>("finish_snip", { rect, label });
 export const cancelSnip = () => invoke<void>("cancel_snip");
 export const historyList = (query: string) => invoke<HistoryEntry[]>("history_list", { query });
 export const historyDelete = (atMs: number) => invoke<void>("history_delete", { atMs });
@@ -107,6 +110,8 @@ export interface LiveInfo {
   model: string;
   model_ok: boolean;
   system_audio: boolean;
+  /** What the screen source watches, if one was picked. */
+  screen: string | null;
 }
 
 export type LiveEvent =
@@ -121,3 +126,4 @@ export const liveStart = (sources: LiveSource[], tutor: boolean) => invoke<void>
 export const liveStop = () => invoke<void>("live_stop");
 export const openLive = () => invoke<void>("open_live");
 export const closeLive = () => invoke<void>("close_live");
+export const livePickScreen = () => invoke<void>("live_pick_screen");

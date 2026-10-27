@@ -2,14 +2,14 @@
 //! to the caption window. Capture runs on plain threads (audio streams cannot move between
 //! threads on every platform); the WebSocket session runs on the async runtime.
 
-use crate::{store, AppState};
-use contextlens_core::live::{self, LiveConfig, Resampler, ServerEvent};
+use crate::{imaging, store, AppState};
+use contextlens_core::live::{self, LiveConfig, Resampler, ScreenMode, ServerEvent};
 use contextlens_core::{HistoryEntry, Provider};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -22,6 +22,41 @@ pub enum LiveSource {
     Mic,
     /// What the speakers play (WASAPI loopback). Windows only for now.
     System,
+    /// A region, window or monitor, sent as frames.
+    Screen,
+}
+
+impl LiveSource {
+    fn is_audio(self) -> bool {
+        self != LiveSource::Screen
+    }
+}
+
+/// The part of the screen a Live session watches, in physical pixels relative to its monitor.
+#[derive(Serialize, Clone, Debug)]
+pub struct ScreenTarget {
+    pub monitor_x: i32,
+    pub monitor_y: i32,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    /// Shown in the caption bar: a window title, "全螢幕" or the region size.
+    pub label: String,
+}
+
+/// What the session sends.
+pub enum Outgoing {
+    Audio(Vec<u8>),
+    /// A JPEG frame, base64.
+    Frame(String),
+    /// A typed user turn.
+    Turn(&'static str),
+}
+
+/// Milliseconds since `epoch` of the last sound or screen change; drives the idle pause.
+fn touch(activity: &AtomicU64, epoch: Instant) {
+    activity.store(epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
 }
 
 pub const SYSTEM_AUDIO_SUPPORTED: bool = cfg!(target_os = "windows");
@@ -64,6 +99,7 @@ pub struct StartArgs {
     pub target_language: String,
     pub api_key: String,
     pub idle_minutes: u32,
+    pub screen: Option<ScreenTarget>,
 }
 
 fn emit(app: &AppHandle, e: LiveUi) {
@@ -98,6 +134,7 @@ fn build_stream(
             let c = d.default_output_config().map_err(|e| format!("無法錄製系統聲音：{e}"))?;
             (d, c)
         }
+        LiveSource::Screen => return Err("螢幕不是聲音來源。".into()),
     };
     let mut rs = Resampler::new(config.sample_rate(), config.channels());
     let err_fn = |e| eprintln!("live capture: {e}");
@@ -164,22 +201,19 @@ const CHUNK: usize = 1600;
 /// Below this loudness a chunk counts as silence.
 const SILENCE_RMS: f32 = 0.01;
 
-/// Sums the sources into 100 ms PCM chunks for the session, reports levels, and calls
-/// `on_idle` once after `idle` without sound.
+/// Sums the audio sources into 100 ms PCM chunks for the session and reports levels.
 fn spawn_mixer(
     sources: usize,
     rx: std_mpsc::Receiver<(usize, Vec<f32>)>,
-    out: mpsc::Sender<Vec<u8>>,
+    out: mpsc::Sender<Outgoing>,
     stop: Arc<AtomicBool>,
-    idle: Option<Duration>,
+    activity: Arc<AtomicU64>,
+    epoch: Instant,
     app: AppHandle,
-    on_idle: impl FnOnce() + Send + 'static,
 ) {
     std::thread::spawn(move || {
         let mut bufs: Vec<VecDeque<f32>> = vec![VecDeque::new(); sources];
-        let mut last_sound = Instant::now();
         let mut last_level = Instant::now();
-        let mut on_idle = Some(on_idle);
         while !stop.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok((i, s)) => bufs[i].extend(s),
@@ -198,22 +232,97 @@ fn spawn_mixer(
                 }
                 let level = live::rms(&mix);
                 if level > SILENCE_RMS {
-                    last_sound = Instant::now();
+                    touch(&activity, epoch);
                 }
                 if last_level.elapsed() >= Duration::from_millis(150) {
                     emit(&app, LiveUi::Level { value: (level * 4.0).min(1.0) });
                     last_level = Instant::now();
                 }
-                if out.blocking_send(live::to_pcm16le(&mix)).is_err() {
+                if out.blocking_send(Outgoing::Audio(live::to_pcm16le(&mix))).is_err() {
                     return;
                 }
             }
-            if let Some(limit) = idle {
-                if last_sound.elapsed() >= limit {
-                    if let Some(f) = on_idle.take() {
-                        f();
+        }
+    });
+}
+
+/// Longest side of a frame sent to Live; enough to read subtitles and slides.
+const FRAME_SIDE: u32 = 1024;
+const FRAME_EVERY: Duration = Duration::from_millis(1000);
+
+/// Captures the target about once a second and sends only frames that changed. In reader mode,
+/// once the screen settles after a change it also asks for a translation of the new text.
+fn spawn_screen(
+    target: ScreenTarget,
+    reader: bool,
+    out: mpsc::Sender<Outgoing>,
+    stop: Arc<AtomicBool>,
+    activity: Arc<AtomicU64>,
+    epoch: Instant,
+) -> Result<(), String> {
+    // The monitor handle is not Send on Windows, so it is looked up inside the thread.
+    let (ready_tx, ready_rx) = std_mpsc::channel();
+    std::thread::spawn(move || {
+        let monitor = match xcap::Monitor::from_point(target.monitor_x + 1, target.monitor_y + 1) {
+            Ok(m) => {
+                let _ = ready_tx.send(Ok(()));
+                m
+            }
+            Err(e) => {
+                let _ = ready_tx.send(Err(format!("找不到要觀看的螢幕：{e}")));
+                return;
+            }
+        };
+        let mut gate = live::FrameGate::default();
+        while !stop.load(Ordering::SeqCst) {
+            let started = Instant::now();
+            if let Ok(img) = monitor.capture_region(target.x, target.y, target.w, target.h) {
+                let img = image::DynamicImage::ImageRgba8(img);
+                let side = live::SIG_SIDE as u32;
+                let sig = img.resize_exact(side, side, image::imageops::FilterType::Triangle).to_luma8().into_raw();
+                let step = gate.step(sig);
+                if step.send {
+                    let small = if img.width().max(img.height()) > FRAME_SIDE {
+                        img.resize(FRAME_SIDE, FRAME_SIDE, image::imageops::FilterType::Triangle)
+                    } else {
+                        img
+                    };
+                    if let Ok(jpeg) = imaging::jpeg_b64(&small, 70) {
+                        if out.blocking_send(Outgoing::Frame(jpeg)).is_err() {
+                            return;
+                        }
                     }
                 }
+                if step.changed {
+                    touch(&activity, epoch);
+                }
+                if reader && step.settled && out.blocking_send(Outgoing::Turn(live::READ_SCREEN_PROMPT)).is_err() {
+                    return;
+                }
+            }
+            if let Some(rest) = FRAME_EVERY.checked_sub(started.elapsed()) {
+                std::thread::sleep(rest);
+            }
+        }
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "螢幕擷取沒有回應。".to_string())?
+}
+
+/// Calls `on_idle` once when nothing was heard or changed on screen for `limit`.
+fn spawn_idle_watch(
+    limit: Duration,
+    stop: Arc<AtomicBool>,
+    activity: Arc<AtomicU64>,
+    epoch: Instant,
+    on_idle: impl FnOnce() + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_secs(2));
+            let quiet = epoch.elapsed().saturating_sub(Duration::from_millis(activity.load(Ordering::SeqCst)));
+            if quiet >= limit {
+                on_idle();
+                return;
             }
         }
     });
@@ -233,7 +342,7 @@ enum Outcome {
 async fn session(
     url: &str,
     setup: serde_json::Value,
-    audio: &mut mpsc::Receiver<Vec<u8>>,
+    outgoing: &mut mpsc::Receiver<Outgoing>,
     stop: &mut watch::Receiver<bool>,
     on: &mut (impl FnMut(ServerEvent) + Send),
 ) -> Outcome {
@@ -256,9 +365,14 @@ async fn session(
             _ = &mut setup_deadline, if !started => {
                 return Outcome::Refused("Gemini Live 沒有回應。".into());
             }
-            chunk = audio.recv(), if started => {
-                let Some(pcm) = chunk else { return Outcome::Stopped };
-                if let Err(e) = ws.send(Message::text(live::audio_message(&pcm).to_string())).await {
+            next = outgoing.recv(), if started => {
+                let msg = match next {
+                    Some(Outgoing::Audio(pcm)) => live::audio_message(&pcm),
+                    Some(Outgoing::Frame(jpeg)) => live::image_message(&jpeg),
+                    Some(Outgoing::Turn(text)) => live::text_turn_message(text),
+                    None => return Outcome::Stopped,
+                };
+                if let Err(e) = ws.send(Message::text(msg.to_string())).await {
                     return Outcome::Failed(e.to_string());
                 }
             }
@@ -351,27 +465,52 @@ fn save(app: &AppHandle, model: &str, tutor: bool, mut t: Transcript) {
 pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
     let (stop_tx, mut stop_rx) = watch::channel(false);
     let capture_stop = Arc::new(AtomicBool::new(false));
-    let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (out_tx, mut out_rx) = mpsc::channel::<Outgoing>(64);
     let (cap_tx, cap_rx) = std_mpsc::channel();
+    let epoch = Instant::now();
+    let activity = Arc::new(AtomicU64::new(0));
+    let fail = |e: String| {
+        capture_stop.store(true, Ordering::SeqCst);
+        Err(e)
+    };
 
-    for (i, s) in args.sources.iter().enumerate() {
+    let audio: Vec<LiveSource> = args.sources.iter().copied().filter(|s| s.is_audio()).collect();
+    for (i, s) in audio.iter().enumerate() {
         if let Err(e) = spawn_capture(*s, i, cap_tx.clone(), capture_stop.clone()) {
-            capture_stop.store(true, Ordering::SeqCst);
-            return Err(e);
+            return fail(e);
         }
     }
     drop(cap_tx);
+    if !audio.is_empty() {
+        spawn_mixer(audio.len(), cap_rx, out_tx.clone(), capture_stop.clone(), activity.clone(), epoch, app.clone());
+    }
 
-    let idle = (args.idle_minutes > 0).then(|| Duration::from_secs(args.idle_minutes as u64 * 60));
-    let idle_app = app.clone();
-    let idle_stop = stop_tx.clone();
-    let idle_capture = capture_stop.clone();
-    spawn_mixer(args.sources.len(), cap_rx, pcm_tx, capture_stop.clone(), idle, app.clone(), move || {
-        let mins = idle.map_or(0, |d| d.as_secs() / 60);
-        status(&idle_app, "paused", Some(format!("{mins} 分鐘沒有聲音，已自動暫停以節省費用。")));
-        idle_capture.store(true, Ordering::SeqCst);
-        let _ = idle_stop.send(true);
-    });
+    let screen_mode = match (args.sources.contains(&LiveSource::Screen), audio.is_empty()) {
+        (false, _) => ScreenMode::None,
+        (true, false) => ScreenMode::Context,
+        (true, true) => ScreenMode::Reader,
+    };
+    if screen_mode != ScreenMode::None {
+        let Some(target) = args.screen.clone() else {
+            return fail("先選擇要讓 Live 看的螢幕範圍。".into());
+        };
+        let reader = screen_mode == ScreenMode::Reader;
+        if let Err(e) = spawn_screen(target, reader, out_tx.clone(), capture_stop.clone(), activity.clone(), epoch) {
+            return fail(e);
+        }
+    }
+    drop(out_tx);
+
+    if args.idle_minutes > 0 {
+        let mins = args.idle_minutes;
+        let (idle_app, idle_stop, idle_capture) = (app.clone(), stop_tx.clone(), capture_stop.clone());
+        spawn_idle_watch(Duration::from_secs(mins as u64 * 60), capture_stop.clone(), activity, epoch, move || {
+            let what = if audio.is_empty() { "畫面沒有變化" } else { "沒有聲音" };
+            status(&idle_app, "paused", Some(format!("{mins} 分鐘{what}，已自動暫停以節省費用。")));
+            idle_capture.store(true, Ordering::SeqCst);
+            let _ = idle_stop.send(true);
+        });
+    }
 
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     let handle = LiveHandle {
@@ -396,6 +535,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                 tutor: args.tutor,
                 text_output,
                 resume_handle: resume.as_deref(),
+                screen: screen_mode,
             });
             let mut announced = false;
             let ui = app.clone();
@@ -426,7 +566,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                 ServerEvent::ResumeHandle(h) => resume = Some(h),
                 ServerEvent::GoAway | ServerEvent::Error(_) => {}
             };
-            match session(&url, setup, &mut pcm_rx, &mut stop_rx, &mut on).await {
+            match session(&url, setup, &mut out_rx, &mut stop_rx, &mut on).await {
                 Outcome::Stopped => break,
                 Outcome::Reconnect if reconnects < 20 => {
                     reconnects += 1;
@@ -491,6 +631,7 @@ mod tests {
     fn setup() -> serde_json::Value {
         live::setup_message(&LiveConfig {
             model: "m", target_language: "繁體中文", tutor: false, text_output: true, resume_handle: None,
+            screen: ScreenMode::None,
         })
     }
 
@@ -499,7 +640,7 @@ mod tests {
         let url = fake_server(r#"{"setupComplete":{}}"#).await;
         let (tx, mut rx) = mpsc::channel(4);
         let (stop_tx, mut stop) = watch::channel(false);
-        tx.send(vec![0u8; 3200]).await.unwrap();
+        tx.send(Outgoing::Audio(vec![0u8; 3200])).await.unwrap();
         let mut events = Vec::new();
         let mut on = |e: ServerEvent| {
             if e == ServerEvent::TurnComplete {
@@ -517,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn an_error_before_setup_is_a_refusal_with_the_reason() {
         let url = fake_server(r#"{"error":{"message":"API key not valid"}}"#).await;
-        let (_tx, mut rx) = mpsc::channel(1);
+        let (_tx, mut rx) = mpsc::channel::<Outgoing>(1);
         let (_stop_tx, mut stop) = watch::channel(false);
         let mut on = |_: ServerEvent| {};
         let run = session(&url, setup(), &mut rx, &mut stop, &mut on);

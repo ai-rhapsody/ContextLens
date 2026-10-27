@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { closeLive, liveInfo, liveStart, liveStop, showSettings, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
+import { closeLive, liveInfo, livePickScreen, liveStart, liveStop, showSettings, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
 type Turn = { input: string; output: string };
@@ -73,12 +73,14 @@ export function Live() {
       }
     });
     const unEnded = listen("live-ended", () => { setLevel(0); setStartedAt(null); refresh(); });
+    const unChanged = listen("live-changed", refresh);
     const unFocus = listen("tauri://focus", refresh);
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeLive();
     window.addEventListener("keydown", onKey);
     return () => {
       unLive.then((f) => f());
       unEnded.then((f) => f());
+      unChanged.then((f) => f());
       unFocus.then((f) => f());
       window.removeEventListener("keydown", onKey);
     };
@@ -114,6 +116,14 @@ export function Live() {
     setStartedAt(null);
   };
 
+  const toggleScreen = () => {
+    if (sources.includes("screen")) return toggleSource("screen");
+    // Turning the screen on always starts with choosing what to watch; the backend
+    // restarts the session with the screen added once a target is picked.
+    setMessage(null);
+    livePickScreen().catch((e) => { setState("error"); setMessage(String(e)); });
+  };
+
   const toggleSource = (s: LiveSource) => {
     const next = sources.includes(s) ? sources.filter((x) => x !== s) : [...sources, s];
     setSources(next);
@@ -145,7 +155,10 @@ export function Live() {
             aria-pressed={sources.includes("system")} onClick={() => toggleSource("system")}
             disabled={!info?.system_audio} title={info?.system_audio ? "錄製電腦正在播放的聲音" : "系統聲音目前只支援 Windows"}
           >系統聲音</button>
-          <button disabled title="螢幕畫面：下一步加入">螢幕</button>
+          <button
+            aria-pressed={sources.includes("screen")} onClick={toggleScreen}
+            title={sources.includes("screen") ? `正在看：${info?.screen ?? ""}` : "選擇要讓 Live 看的區域、視窗或螢幕"}
+          >螢幕</button>
         </div>
         <label className="lv-tutor">
           註解
@@ -165,6 +178,16 @@ export function Live() {
         }}
       >
         {message && <div className={`lv-msg${state === "error" ? " err" : ""}`} role="status">{message}</div>}
+
+        {sources.includes("screen") && info?.screen && (
+          <div className="lv-screen">
+            <span className="faint">
+              {sources.some((s) => s !== "screen") ? "畫面作為上下文" : "翻譯畫面上的新文字"} · 正在看：
+            </span>
+            <span className="lv-target">{info.screen}</span>
+            <button className="btn quiet" onClick={() => livePickScreen()}>重新選擇</button>
+          </div>
+        )}
 
         {info && !info.model_ok && (
           <div className="lv-msg err">

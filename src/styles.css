@@ -268,3 +268,6 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 .lv-hint { margin: auto 0; color: var(--muted); }
 .lv-msg { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: var(--radius-control); background: var(--raised); color: var(--text); font-size: 13px; }
 .lv-msg.err { background: var(--pill-negative-bg); color: var(--pill-negative-ink); }
+.lv-screen { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.lv-screen .lv-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lv-screen .btn { height: 24px; padding: 0 8px; font-size: 12px; }

@@ -10,9 +10,10 @@
 - [x] In-app updates (signed, via GitHub releases)
 
 - [x] Live mode, step 1 and 2: microphone and system audio (Windows loopback) to Gemini Live, caption bar, tutor notes, idle auto-pause, session resumption, history
+- [x] Live mode, step 3: screen frames from a picked region, window or monitor; context for speech, or a screen reader on its own; only changed frames are sent; the caption bar is excluded from capture
 
 ## Next
-- [ ] Live mode, step 3: screen frames (about one per second) alongside the audio
+- [ ] Live: follow a window when it moves (today the picked rectangle is fixed)
 - [ ] Live: system audio on macOS (ScreenCaptureKit) and Linux (PulseAudio monitor)
 - [ ] Live: honour HTTPS proxies for the WebSocket connection
 - [ ] Follow-up questions in the popup ("ask about this")

@@ -28,10 +28,10 @@ export function Snip() {
   // CSS pixels to the screenshot's physical pixels.
   const k = useMemo(() => (view ? view.width / window.innerWidth : 1), [view]);
 
-  const submit = (r: Rect) => {
+  const submit = (r: Rect, label: string | null = null) => {
     if (done.current) return;
     done.current = true;
-    finishSnip(r).catch((e) => { done.current = false; setError(String(e)); });
+    finishSnip(r, label).catch((e) => { done.current = false; setError(String(e)); });
   };
 
   const windowAt = (x: number, y: number) =>
@@ -39,10 +39,10 @@ export function Snip() {
 
   const onDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest(".snip-bar")) return;
-    if (mode === "screen" && view) return submit({ x: 0, y: 0, w: view.width, h: view.height });
+    if (mode === "screen" && view) return submit({ x: 0, y: 0, w: view.width, h: view.height }, "全螢幕");
     if (mode === "window") {
       const w = windowAt(e.clientX, e.clientY);
-      if (w) submit({ x: w.x, y: w.y, w: w.w, h: w.h });
+      if (w) submit({ x: w.x, y: w.y, w: w.w, h: w.h }, w.title ? `視窗：${w.title}` : "視窗");
       return;
     }
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -109,7 +109,8 @@ export function Snip() {
         ))}
         <span className="sep" />
         <span className="hint">
-          {mode === "region" ? "拖曳框選" : mode === "window" ? "點選一個視窗" : "按一下擷取整個螢幕"}
+          {view.purpose === "live_target" && <strong>選擇要讓 Live 看的範圍 · </strong>}
+          {mode === "region" ? "拖曳框選" : mode === "window" ? "點選一個視窗" : "按一下選取整個螢幕"}
         </span>
         <button onClick={() => cancelSnip()}>取消<kbd>Esc</kbd></button>
       </div>

@@ -52,7 +52,9 @@ export function LivePage({ settings, commit }: { settings: Settings; commit: (s:
           <button className="btn" onClick={() => openLive()}>開啟字幕列</button>
         </div>
         <div className="soon">
-          系統聲音目前只支援 Windows。螢幕畫面會在下一步加入。公司網路若必須透過 Proxy 才能連外，Live 可能無法連線。
+          螢幕：開啟時先選要看的區域、視窗或整個螢幕。搭配聲音時畫面只當上下文（人名、投影片用語），
+          只開螢幕時會翻譯畫面上新出現的文字（字幕、聊天、遊戲對話）。畫面沒變就不會送出。
+          系統聲音目前只支援 Windows。公司網路若必須透過 Proxy 才能連外，Live 可能無法連線。
         </div>
       </div>
     </>
