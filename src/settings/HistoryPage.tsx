@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { historyClear, historyDelete, historyList, openLink, PROVIDERS, type HistoryEntry, type Settings } from "../lib/api";
+import { historyClear, historyDelete, historyList, openChat, openLink, PROVIDERS, type HistoryEntry, type Settings } from "../lib/api";
 import { KIND_LABEL } from "../lib/files";
 import { parseSections } from "../lib/sections";
 import { Rich } from "../lib/Rich";
@@ -93,6 +93,7 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
                 <span className="h-meta">
                   <span className="num">{when(e.at_ms)}</span>
                   {e.tutor && <span className="faint">教學</span>}
+                  {!!e.thread?.length && <span className="faint">追問 {e.thread.length}</span>}
                 </span>
               </button>
               {isOpen && (
@@ -110,8 +111,17 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
                       </ol>
                     </section>
                   )}
+                  {e.thread?.map(([q, a], i) => (
+                    <div className="ex" key={`t${i}`}>
+                      <p className="ex-q">{q}</p>
+                      <div className="ex-a"><Rich text={a} /></div>
+                    </div>
+                  ))}
                   <div className="h-actions">
                     <span className="faint grow">{provider} · {e.model}</span>
+                    <button className="btn primary" onClick={() => openChat(e.at_ms)}>
+                      {e.thread?.length ? `繼續對話（${e.thread.length}）` : "繼續對話"}
+                    </button>
                     <button className="btn" onClick={() => copy(e)}>{copied === e.at_ms ? "已複製" : "複製譯文"}</button>
                     <button className="btn quiet danger" onClick={() => remove(e.at_ms)}>刪除</button>
                   </div>

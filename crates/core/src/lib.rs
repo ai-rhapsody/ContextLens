@@ -2,6 +2,7 @@
 //! history, and streaming completions from Gemini, OpenAI and Anthropic.
 
 pub mod caps;
+pub mod conversation;
 pub mod history;
 pub mod live;
 pub mod media;
@@ -11,9 +12,10 @@ pub mod settings;
 pub mod sse;
 
 pub use caps::Caps;
+pub use conversation::Conversation;
 pub use history::{History, HistoryEntry};
 pub use media::{Media, MediaKind};
-pub use provider::{can_search, stream_completion, ChatRequest, Delta, ProviderError};
+pub use provider::{can_search, stream_completion, ChatRequest, Delta, ProviderError, Turn};
 pub use reqwest;
 pub use settings::{Hotkey, Provider, Settings, Source, Task};
 

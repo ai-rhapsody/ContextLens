@@ -56,6 +56,9 @@ export interface HistoryEntry {
   provider: Provider;
   model: string;
   sources?: [string, string][];
+  /** Follow-up questions and answers, in order. */
+  thread?: [string, string][];
+  task?: Task | null;
 }
 
 export interface WinRect { x: number; y: number; w: number; h: number; title: string }
@@ -78,6 +81,8 @@ export const providerInfo = () => invoke<ProviderInfo[]>("provider_info");
 export type StreamEvent =
   | { kind: "delta"; text: string }
   | { kind: "source"; title: string; url: string }
+  | { kind: "conversation"; id: number }
+  | { kind: "question"; text: string }
   | { kind: "done" }
   | { kind: "error"; message: string };
 
@@ -167,3 +172,40 @@ export async function openLink(url: string) {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
   await openUrl(url);
 }
+
+/** One capture and every follow-up about it. `id` is also its history id when history is on. */
+export interface Conversation {
+  id: number;
+  task: Task;
+  tutor: boolean;
+  text: string;
+  media: Media | null;
+  label: string;
+  provider: Provider;
+  model: string;
+  answer: string;
+  sources: [string, string][];
+  thread: [string, string][];
+  media_lost: boolean;
+}
+
+/** What a selected phrase in an answer can be asked about. */
+export type PhraseAction = "explain" | "examples" | "rephrase";
+
+export const convoGet = (id: number) => invoke<Conversation | null>("convo_get", { id });
+export function followUp(
+  id: number,
+  ask: { question: string } | { action: PhraseAction; phrase: string },
+  onEvent: (e: StreamEvent) => void,
+) {
+  const channel = new Channel<StreamEvent>();
+  channel.onmessage = onEvent;
+  const args = "question" in ask
+    ? { question: ask.question, action: null, phrase: null }
+    : { question: null, action: ask.action, phrase: ask.phrase };
+  return invoke<void>("follow_up", { id, ...args, onEvent: channel });
+}
+export const openChat = (id: number) => invoke<void>("open_chat", { id });
+export const chatPending = () => invoke<number | null>("chat_pending");
+export const liveFollowUp = (input: string, output: string) => invoke<void>("live_follow_up", { input, output });
+export const liveStar = (input: string, output: string) => invoke<number>("live_star", { input, output });

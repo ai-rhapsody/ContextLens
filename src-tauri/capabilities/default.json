@@ -6,7 +6,8 @@
     "main",
     "popup",
     "snip-*",
-    "live"
+    "live",
+    "chat"
   ],
   "permissions": [
     "core:default",

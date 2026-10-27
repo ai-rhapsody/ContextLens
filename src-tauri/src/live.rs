@@ -5,7 +5,7 @@
 
 use crate::{imaging, store, AppState};
 use contextlens_core::live::{self, Backend, LiveConfig, Resampler, ScreenMode, ServerEvent};
-use contextlens_core::{ChatRequest, Delta, HistoryEntry, Media, Provider};
+use contextlens_core::{ChatRequest, Delta, HistoryEntry, Media, Provider, Task};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -514,6 +514,7 @@ async fn reader(
                     media: vec![Media { mime: "image/jpeg".into(), data_b64: f, name: None }],
                     web_search: false,
                     quick: true,
+                    turns: vec![],
                 };
                 let mut out = String::new();
                 let stopped = stop.clone();
@@ -585,6 +586,8 @@ fn save(app: &AppHandle, provider: Provider, model: &str, tutor: bool, mut t: Tr
         provider,
         model: model.into(),
         sources: vec![],
+        thread: vec![],
+        task: Some(Task::Translate),
     };
     let mut h = state.history.lock().unwrap();
     h.push(entry);

@@ -5,6 +5,7 @@ import { Popup } from "./popup/Popup";
 import { SettingsApp } from "./settings/SettingsApp";
 import { Snip } from "./snip/Snip";
 import { Live } from "./live/Live";
+import { Chat } from "./chat/Chat";
 import "./styles.css";
 
 function windowLabel(): string {
@@ -31,6 +32,6 @@ window.addEventListener("unhandledrejection", (e) => showFatal(String(e.reason))
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {windowLabel().startsWith("snip-") ? <Snip /> : ({ popup: <Popup />, live: <Live /> }[windowLabel()] ?? <SettingsApp />)}
+    {windowLabel().startsWith("snip-") ? <Snip /> : ({ popup: <Popup />, live: <Live />, chat: <Chat /> }[windowLabel()] ?? <SettingsApp />)}
   </React.StrictMode>,
 );

@@ -6,9 +6,10 @@ mod snip;
 mod store;
 
 use contextlens_core::{
-    caps, live::Backend, prompt, Caps, ChatRequest, Delta, History, HistoryEntry, Hotkey, Media, Provider,
-    Settings, Source, Task,
+    caps, conversation, live::Backend, prompt, Caps, ChatRequest, Conversation, Delta, History, HistoryEntry,
+    Hotkey, Media, Provider, Settings, Source, Task,
 };
+use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -44,6 +45,10 @@ struct AppState {
     /// A pinned popup stays where the user put it instead of jumping to the cursor.
     popup_pinned: AtomicBool,
     live: Mutex<Option<live::LiveHandle>>,
+    /// The conversation the chat window was last asked to show.
+    chat_pending: Mutex<Option<u64>>,
+    /// Recent conversations with their media, newest last, for follow-up questions.
+    convos: Mutex<VecDeque<Conversation>>,
     /// Sources of the last Live session, reused when a hotkey starts the next one.
     live_sources: Mutex<Vec<live::LiveSource>>,
     /// The screen area Live watches when the screen source is on.
@@ -56,6 +61,10 @@ struct AppState {
 enum StreamEvent {
     Delta { text: String },
     Source { title: String, url: String },
+    /// The answer is complete and can be followed up under this id.
+    Conversation { id: u64 },
+    /// The question a follow-up is answering (shown above its answer).
+    Question { text: String },
     Done,
     Error { message: String },
 }
@@ -638,38 +647,243 @@ async fn run_translation(
     if state.generation.load(Ordering::SeqCst) != gen {
         return Ok(());
     }
-    if result.is_ok() && keep && !full.trim().is_empty() {
+    if result.is_ok() && !full.trim().is_empty() {
         let m = req.media.first();
-        let entry = HistoryEntry {
-            at_ms: now_ms(),
-            kind: m.and_then(|m| m.kind()).map_or("text", |k| match k {
-                contextlens_core::MediaKind::Image => "image",
-                contextlens_core::MediaKind::Audio => "audio",
-                contextlens_core::MediaKind::Video => "video",
-            })
-            .into(),
-            source: match m {
-                Some(m) => m.name.clone().unwrap_or_else(|| m.kind().map_or("檔案", |k| k.label()).into()),
-                None => input.text.trim().chars().take(4000).collect(),
+        let kind = m.and_then(|m| m.kind()).map_or("text", |k| match k {
+            contextlens_core::MediaKind::Image => "image",
+            contextlens_core::MediaKind::Audio => "audio",
+            contextlens_core::MediaKind::Video => "video",
+        });
+        let label = m.map(|m| m.name.clone().unwrap_or_else(|| m.kind().map_or("檔案", |k| k.label()).into()));
+        let mut id = now_ms();
+        if keep {
+            let entry = HistoryEntry {
+                at_ms: id,
+                kind: kind.into(),
+                source: label.clone().unwrap_or_else(|| input.text.trim().chars().take(4000).collect()),
+                thumb: m.and_then(imaging::thumbnail),
+                result: full.clone(),
+                tutor,
+                provider,
+                model: model.clone(),
+                sources: sources.clone(),
+                thread: vec![],
+                task: Some(task),
+            };
+            let mut h = state.history.lock().unwrap();
+            id = h.push_id(entry);
+            let _ = store::save_history(&app, &h);
+            drop(h);
+            let _ = app.emit_to("main", "history-changed", ());
+        }
+        remember_convo(
+            &state,
+            Conversation {
+                id,
+                task,
+                tutor,
+                text: input.text.clone(),
+                media: req.media.first().cloned(),
+                label: label.unwrap_or_default(),
+                provider,
+                model,
+                answer: full,
+                sources,
+                thread: vec![],
+                media_lost: false,
             },
-            thumb: m.and_then(imaging::thumbnail),
-            result: full,
-            tutor,
-            provider,
-            model,
-            sources,
-        };
-        let mut h = state.history.lock().unwrap();
-        h.push(entry);
-        let _ = store::save_history(&app, &h);
-        drop(h);
-        let _ = app.emit_to("main", "history-changed", ());
+        );
+        let _ = on_event.send(StreamEvent::Conversation { id });
     }
     let _ = on_event.send(match result {
         Ok(()) => StreamEvent::Done,
         Err(message) => StreamEvent::Error { message },
     });
     Ok(())
+}
+
+// ---------- conversations ----------
+
+/// How many conversations keep their media in memory.
+const CONVOS_KEPT: usize = 20;
+
+fn remember_convo(state: &AppState, c: Conversation) {
+    let mut list = state.convos.lock().unwrap();
+    list.retain(|x| x.id != c.id);
+    list.push_back(c);
+    while list.len() > CONVOS_KEPT {
+        list.pop_front();
+    }
+}
+
+/// A conversation from memory, or rebuilt from history (without its media) when it is older.
+fn find_convo(state: &AppState, id: u64) -> Option<Conversation> {
+    if let Some(c) = state.convos.lock().unwrap().iter().find(|c| c.id == id) {
+        return Some(c.clone());
+    }
+    let h = state.history.lock().unwrap();
+    let e = h.get(id)?;
+    let media_kind = e.kind != "text" && e.kind != "live";
+    Some(Conversation {
+        id,
+        task: e.task.unwrap_or_default(),
+        tutor: e.tutor,
+        text: if media_kind { String::new() } else { e.source.clone() },
+        media: None,
+        label: if media_kind { e.source.clone() } else { String::new() },
+        provider: e.provider,
+        model: e.model.clone(),
+        answer: e.result.clone(),
+        sources: e.sources.clone(),
+        thread: e.thread.clone(),
+        media_lost: media_kind,
+    })
+}
+
+#[tauri::command]
+fn convo_get(state: State<AppState>, id: u64) -> Option<Conversation> {
+    find_convo(&state, id)
+}
+
+/// Asks a follow-up question about a conversation and streams the answer. `action` with
+/// `phrase` builds the question for a phrase selected in an answer.
+#[tauri::command]
+async fn follow_up(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: u64,
+    question: Option<String>,
+    action: Option<String>,
+    phrase: Option<String>,
+    on_event: Channel<StreamEvent>,
+) -> Result<(), String> {
+    let convo = find_convo(&state, id).ok_or("找不到這段對話，可能已從歷史紀錄刪除。")?;
+    let question = match (question, action, phrase) {
+        (Some(q), _, _) if !q.trim().is_empty() => q.trim().to_string(),
+        (_, Some(a), Some(p)) if !p.trim().is_empty() => conversation::about_selection(&a, p.trim()),
+        _ => return Err("問題是空的".into()),
+    };
+    let lang = state.settings.lock().unwrap().target_language.clone();
+    let web = contextlens_core::can_search(convo.provider, &convo.model);
+    let req = convo.follow_up(&question, &lang, web);
+    let _ = on_event.send(StreamEvent::Question { text: question.clone() });
+
+    let mut answer = String::new();
+    let result = stream(&state, convo.provider, &convo.model, &req, None, |d| match d {
+        Delta::Text(t) => {
+            answer.push_str(&t);
+            on_event.send(StreamEvent::Delta { text: t }).is_ok()
+        }
+        Delta::Source { title, url } => on_event.send(StreamEvent::Source { title, url }).is_ok(),
+    })
+    .await;
+    if result.is_ok() && !answer.trim().is_empty() {
+        let mut updated = convo;
+        updated.thread.push((question.clone(), answer.clone()));
+        remember_convo(&state, updated);
+        let mut h = state.history.lock().unwrap();
+        if h.append_thread(id, question, answer) {
+            let _ = store::save_history(&app, &h);
+            drop(h);
+            let _ = app.emit_to("main", "history-changed", ());
+        }
+        // Both the popup and the conversation window may show this conversation.
+        let _ = app.emit("convo-updated", id);
+    }
+    let _ = on_event.send(match result {
+        Ok(()) => StreamEvent::Done,
+        Err(message) => StreamEvent::Error { message },
+    });
+    Ok(())
+}
+
+fn open_chat_window(app: &AppHandle, id: u64) {
+    if let Some(w) = app.get_webview_window("chat") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    *app.state::<AppState>().chat_pending.lock().unwrap() = Some(id);
+    let _ = app.emit_to("chat", "chat-open", id);
+}
+
+#[tauri::command]
+fn open_chat(app: AppHandle, id: u64) {
+    open_chat_window(&app, id);
+}
+
+/// The conversation the chat window should show when it first loads.
+#[tauri::command]
+fn chat_pending(state: State<AppState>) -> Option<u64> {
+    *state.chat_pending.lock().unwrap()
+}
+
+/// Starts a conversation about one Live caption line and opens it in the chat window.
+/// Live keeps running.
+#[tauri::command]
+fn live_follow_up(app: AppHandle, state: State<AppState>, input: String, output: String) -> Result<(), String> {
+    let (provider, model, keep) = {
+        let s = state.settings.lock().unwrap();
+        (s.provider, s.model_for(s.provider).to_string(), s.save_history)
+    };
+    let mut id = now_ms();
+    if keep {
+        let mut h = state.history.lock().unwrap();
+        id = h.push_id(live_line_entry(&input, &output, provider, &model));
+        let _ = store::save_history(&app, &h);
+        drop(h);
+        let _ = app.emit_to("main", "history-changed", ());
+    }
+    remember_convo(
+        &state,
+        Conversation {
+            id,
+            task: Task::Translate,
+            tutor: false,
+            text: input,
+            media: None,
+            label: String::new(),
+            provider,
+            model,
+            answer: output,
+            sources: vec![],
+            thread: vec![],
+            media_lost: false,
+        },
+    );
+    open_chat_window(&app, id);
+    Ok(())
+}
+
+fn live_line_entry(input: &str, output: &str, provider: Provider, model: &str) -> HistoryEntry {
+    HistoryEntry {
+        at_ms: now_ms(),
+        kind: "live".into(),
+        source: input.trim().chars().take(4000).collect(),
+        thumb: None,
+        result: output.trim().to_string(),
+        tutor: false,
+        provider,
+        model: model.into(),
+        sources: vec![],
+        thread: vec![],
+        task: Some(Task::Translate),
+    }
+}
+
+/// Keeps one Live caption line in history right away.
+#[tauri::command]
+fn live_star(app: AppHandle, state: State<AppState>, input: String, output: String) -> Result<u64, String> {
+    let (provider, model) = {
+        let s = state.settings.lock().unwrap();
+        (s.provider, s.model_for(s.provider).to_string())
+    };
+    let mut h = state.history.lock().unwrap();
+    let id = h.push_id(live_line_entry(&input, &output, provider, &model));
+    store::save_history(&app, &h)?;
+    drop(h);
+    let _ = app.emit_to("main", "history-changed", ());
+    Ok(id)
 }
 
 /// Sends a tiny request with the stored key so the settings page can say "works" or why not.
@@ -679,9 +893,8 @@ async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<Stri
     let req = ChatRequest {
         system: "Reply with the single word OK.".into(),
         user: "ping".into(),
-        media: vec![],
-        web_search: false,
         quick: true,
+        ..Default::default()
     };
     stream(&state, args.provider, &model, &req, None, |_| true).await?;
     Ok(model)
@@ -852,6 +1065,12 @@ pub fn run() {
             close_live,
             live_pick_screen,
             live_set_provider,
+            convo_get,
+            follow_up,
+            open_chat,
+            chat_pending,
+            live_follow_up,
+            live_star,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -864,6 +1083,8 @@ pub fn run() {
                 generation: AtomicU64::new(0),
                 popup_pinned: AtomicBool::new(settings.popup_pinned),
                 live: Mutex::new(None),
+                chat_pending: Mutex::new(None),
+                convos: Mutex::new(VecDeque::new()),
                 live_sources: Mutex::new(vec![live::LiveSource::Mic]),
                 live_screen: Mutex::new(None),
                 http: contextlens_core::http_client(),

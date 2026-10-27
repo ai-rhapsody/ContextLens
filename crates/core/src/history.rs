@@ -23,6 +23,12 @@ pub struct HistoryEntry {
     /// Web pages a search drew on: (title, url).
     #[serde(default)]
     pub sources: Vec<(String, String)>,
+    /// Follow-up questions and their answers, in order.
+    #[serde(default)]
+    pub thread: Vec<(String, String)>,
+    /// What was asked for: `translate`, `explain` or `search`.
+    #[serde(default)]
+    pub task: Option<crate::settings::Task>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -41,6 +47,27 @@ impl History {
         }
         self.entries.insert(0, e);
         self.entries.truncate(MAX_ENTRIES);
+    }
+
+    pub fn get(&self, at_ms: u64) -> Option<&HistoryEntry> {
+        self.entries.iter().find(|e| e.at_ms == at_ms)
+    }
+
+    /// Adds a follow-up exchange to an entry; false if the entry is gone.
+    pub fn append_thread(&mut self, at_ms: u64, question: String, answer: String) -> bool {
+        match self.entries.iter_mut().find(|e| e.at_ms == at_ms) {
+            Some(e) => {
+                e.thread.push((question, answer));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Pushes an entry and returns the id it was stored under (ids are unique).
+    pub fn push_id(&mut self, e: HistoryEntry) -> u64 {
+        self.push(e);
+        self.entries[0].at_ms
     }
 
     pub fn remove(&mut self, at_ms: u64) -> bool {
@@ -92,6 +119,8 @@ mod tests {
             provider: Provider::Gemini,
             model: "m".into(),
             sources: vec![],
+            thread: vec![],
+            task: None,
         }
     }
 
@@ -124,6 +153,25 @@ mod tests {
         let id = h.search("", 1)[0].at_ms;
         assert!(h.remove(id));
         assert!(!h.remove(id));
+    }
+
+    #[test]
+    fn threads_append_to_the_right_entry() {
+        let mut h = History::default();
+        let a = h.push_id(e(5, "a", "甲"));
+        let b = h.push_id(e(5, "b", "乙"));
+        assert_ne!(a, b);
+        assert!(h.append_thread(a, "q".into(), "答".into()));
+        assert_eq!(h.get(a).unwrap().thread, vec![("q".to_string(), "答".to_string())]);
+        assert!(h.get(b).unwrap().thread.is_empty());
+        assert!(!h.append_thread(999, "q".into(), "x".into()));
+    }
+
+    #[test]
+    fn old_entries_without_threads_still_load() {
+        let old = r#"[{"at_ms":1,"kind":"text","source":"a","result":"b","tutor":false,"provider":"gemini","model":"m"}]"#;
+        let h: History = serde_json::from_str(old).unwrap();
+        assert!(h.get(1).unwrap().thread.is_empty());
     }
 
     #[test]

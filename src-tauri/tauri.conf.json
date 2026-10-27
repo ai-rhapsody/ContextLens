@@ -58,6 +58,19 @@
         "focus": false,
         "resizable": true,
         "create": false
+      },
+      {
+        "label": "chat",
+        "title": "ContextLens 對話",
+        "url": "index.html",
+        "width": 720,
+        "height": 680,
+        "minWidth": 460,
+        "minHeight": 360,
+        "visible": false,
+        "center": true,
+        "create": false,
+        "dragDropEnabled": false
       }
     ]
   },

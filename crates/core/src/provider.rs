@@ -4,7 +4,14 @@ use crate::sse::SseDecoder;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
-#[derive(Clone, Debug)]
+/// A later message in a conversation, after the first user message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn {
+    pub user: bool,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct ChatRequest {
     pub system: String,
     pub user: String,
@@ -15,6 +22,8 @@ pub struct ChatRequest {
     pub web_search: bool,
     /// A quick job (translation): ask reasoning models to think briefly, for speed.
     pub quick: bool,
+    /// Follow-up messages after the first user message (answers and further questions).
+    pub turns: Vec<Turn>,
 }
 
 /// Claude models of the 5 generation take `output_config.effort` and the newer web search tool;
@@ -123,10 +132,10 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
             let mut body = json!({
                 "model": model,
                 "stream": true,
-                "messages": [
-                    { "role": "system", "content": req.system },
-                    { "role": "user", "content": openai_content(req) },
-                ],
+                "messages": std::iter::once(json!({ "role": "system", "content": req.system }))
+                    .chain(std::iter::once(json!({ "role": "user", "content": openai_content(req) })))
+                    .chain(req.turns.iter().map(|t| json!({ "role": if t.user { "user" } else { "assistant" }, "content": t.text })))
+                    .collect::<Vec<_>>(),
             });
             if req.web_search && can_search(provider, model) {
                 body["web_search_options"] = json!({});
@@ -146,7 +155,9 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
                 "stream": true,
                 "max_tokens": 4096,
                 "system": req.system,
-                "messages": [{ "role": "user", "content": anthropic_content(req) }],
+                "messages": std::iter::once(json!({ "role": "user", "content": anthropic_content(req) }))
+                    .chain(req.turns.iter().map(|t| json!({ "role": if t.user { "user" } else { "assistant" }, "content": t.text })))
+                    .collect::<Vec<_>>(),
             });
             if req.web_search {
                 body["tools"] = json!([{ "type": claude_web_search_type(model), "name": "web_search", "max_uses": 3 }]);
@@ -165,7 +176,9 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
         Provider::Gemini => {
             let mut body = json!({
                 "systemInstruction": { "parts": [{ "text": req.system }] },
-                "contents": [{ "role": "user", "parts": gemini_parts(req) }],
+                "contents": std::iter::once(json!({ "role": "user", "parts": gemini_parts(req) }))
+                    .chain(req.turns.iter().map(|t| json!({ "role": if t.user { "user" } else { "model" }, "parts": [{ "text": t.text }] })))
+                    .collect::<Vec<_>>(),
             });
             if req.web_search {
                 body["tools"] = json!([{ "google_search": {} }]);
@@ -378,7 +391,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn req() -> ChatRequest {
-        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![], web_search: false, quick: false }
+        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![], web_search: false, quick: false, turns: vec![] }
     }
 
     fn req_with_image() -> ChatRequest {
@@ -409,6 +422,23 @@ mod tests {
         assert!(p.url.contains("models/gemini-x:streamGenerateContent?alt=sse"));
         assert!(!p.url.contains("SECRET"));
         assert_eq!(p.headers[0], ("x-goog-api-key", "SECRET".to_string()));
+    }
+
+    #[test]
+    fn follow_up_turns_use_each_providers_roles() {
+        let r = ChatRequest {
+            turns: vec![Turn { user: false, text: "答".into() }, Turn { user: true, text: "再問".into() }],
+            ..req()
+        };
+        let o = plan(Provider::OpenAi, "m", "K", &r).body;
+        assert_eq!(o["messages"].as_array().unwrap().len(), 4);
+        assert_eq!((o["messages"][2]["role"].as_str(), o["messages"][3]["content"].as_str()), (Some("assistant"), Some("再問")));
+        let a = plan(Provider::Anthropic, "m", "K", &r).body;
+        assert_eq!(a["messages"][1]["role"], "assistant");
+        assert_eq!(a["messages"][2]["content"], "再問");
+        let g = plan(Provider::Gemini, "m", "K", &r).body;
+        assert_eq!(g["contents"][1]["role"], "model");
+        assert_eq!(g["contents"][2]["parts"][0]["text"], "再問");
     }
 
     #[test]

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  dataUrl, getSettings, hidePopup, openLink, providerInfo, PROVIDERS, runTranslation, searchWeb, setPopupPinned,
+  dataUrl, getSettings, hidePopup, openChat, providerInfo, PROVIDERS, runTranslation, setPopupPinned,
   showSettings, takePendingCapture, TASKS, type Media, type Provider, type ProviderInfo, type Settings, type Task,
 } from "../lib/api";
 import { fileToMedia, KIND_LABEL, kindOf } from "../lib/files";
 import { parseSections } from "../lib/sections";
-import { Rich } from "../lib/Rich";
 import { Thinking } from "../lib/Thinking";
+import { Answer, FollowBar, LEAD, QUERIES, SelectionMenu, Sources, Thread, useStickToBottom, useThread } from "../lib/convo";
 
 type Status = "idle" | "streaming" | "done" | "error";
 type Input = { text: string; media: Media | null };
@@ -17,19 +17,6 @@ type Blocked = { kind: "image" | "audio" | "video"; model: string; alternatives:
 
 /** Wait this long without a token before showing the skeleton, so fast answers never flash it. */
 const SKELETON_DELAY_MS = 250;
-
-/** The section each task leads with, and the one "copy" takes. */
-const LEAD: Record<Task, string> = { translate: "翻譯", explain: "說明", search: "這是什麼" };
-const QUERIES = "搜尋關鍵字";
-const MUTED = new Set(["原文", "內容"]);
-
-function host(url: string) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
 
 export function Popup() {
   const [input, setInput] = useState<Input | null>(null);
@@ -50,6 +37,10 @@ export function Popup() {
   const [dragging, setDragging] = useState(false);
   const [blocked, setBlocked] = useState<Blocked | null>(null);
   const [override, setOverride] = useState<Provider | null>(null); // this request only
+  const [convo, setConvo] = useState<number | null>(null); // follow-ups go to this conversation
+  const thread = useThread(convo);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useStickToBottom(bodyRef, thread.items);
   const infoRef = useRef<ProviderInfo[]>([]);
   const settingsRef = useRef<Settings | null>(null);
   const run = useRef(0); // identifies the current translation; stale events are dropped
@@ -73,6 +64,8 @@ export function Popup() {
     setNeedsKey(false);
     setOverride(via);
     setBlocked(null);
+    setConvo(null);
+    thread.reset();
 
     // Check the capability table before sending, and offer providers that can read this input.
     const kind = next.media ? kindOf(next.media.mime) : null;
@@ -96,10 +89,11 @@ export function Popup() {
       if (id !== run.current) return;
       if (e.kind === "delta") setResult((r) => r + e.text);
       else if (e.kind === "source") setSources((s) => [...s, { title: e.title, url: e.url }]);
+      else if (e.kind === "conversation") setConvo(e.id);
       else if (e.kind === "done") setStatus("done");
-      else fail(e.message);
+      else if (e.kind === "error") fail(e.message);
     }, via).catch((err) => id === run.current && fail(String(err)));
-  }, [fail]);
+  }, [fail, thread.reset]);
 
   const pickUp = useCallback(async () => {
     const [cap, s, info] = await Promise.all([takePendingCapture(), getSettings(), providerInfo()]);
@@ -121,12 +115,14 @@ export function Popup() {
       run.current++;
       setInput(null);
       setResult("");
+      setConvo(null);
+      thread.reset();
       setStatus("idle");
       setKept(true);
       return;
     }
     start({ text: cap.text, media: cap.media }, cap.task, cap.tutor);
-  }, [start, fail]);
+  }, [start, fail, thread.reset]);
 
   useEffect(() => {
     pickUp();
@@ -260,7 +256,7 @@ export function Popup() {
         <button className="btn quiet" onClick={() => hidePopup()} aria-label="關閉" title="關閉（Esc）">✕</button>
       </div>
 
-      <div className="pop-body">
+      <div className="pop-body" ref={bodyRef}>
         {input?.text && !media && (
           <p className={`src${expanded ? " open" : ""}`} onClick={() => setExpanded((v) => !v)} title="點一下展開原文">
             {input.text}
@@ -326,40 +322,15 @@ export function Popup() {
           <p className="offline faint">這個模型無法上網，以下是模型本身的知識，可能不是最新資訊。</p>
         )}
 
-        {status !== "error" && hasHeadings && sections.map((s, i) => (
-          <section
-            key={s.title ?? i}
-            className={`sec${s.title === LEAD[task] ? " lead" : ""}${s.title && MUTED.has(s.title) ? " orig" : ""}`}
-          >
-            {s.title && <h2>{s.title}</h2>}
-            {s.title === QUERIES ? (
-              <div className="queries">
-                {s.body.split("\n").map((l) => l.replace(/^\s*[-*•]\s*/, "").replace(/^["「]|["」]$/g, "").trim())
-                  .filter(Boolean)
-                  .map((q) => (
-                    <button key={q} className="chip" onClick={() => searchWeb(q)} title="用瀏覽器搜尋">{q} ↗</button>
-                  ))}
-              </div>
-            ) : (
-              <div className={streaming && i === sections.length - 1 ? "caret" : undefined}><Rich text={s.body} /></div>
-            )}
-          </section>
-        ))}
+        {status !== "error" && hasHeadings && <Answer text={result} task={task} streaming={streaming} />}
 
-        {sources.length > 0 && (
-          <section className="sec sources">
-            <h2>來源</h2>
-            <ol>
-              {sources.map((s) => (
-                <li key={s.url}>
-                  <button className="link" onClick={() => openLink(s.url)} title={s.url}>
-                    {s.title !== s.url ? s.title : host(s.url)}
-                  </button>
-                  <span className="faint"> · {host(s.url)}</span>
-                </li>
-              ))}
-            </ol>
-          </section>
+        <Sources list={sources} />
+
+        {status === "done" && convo !== null && (
+          <>
+            <Thread items={thread.items} />
+            <FollowBar task={task} busy={thread.busy} onAsk={(a) => { setKept(true); thread.ask(a); }} />
+          </>
         )}
       </div>
 
@@ -372,6 +343,12 @@ export function Popup() {
           {!pinned && kept && status !== "idle" && <span className="faint"> · Esc 關閉</span>}
         </span>
         <button className="btn quiet" onClick={() => fileInput.current?.click()} title="分析圖片、音訊或影片">檔案…</button>
+        {convo !== null && status === "done" && (
+          <button
+            className="btn quiet" title="在對話視窗繼續討論"
+            onClick={() => { openChat(convo); hidePopup(); }}
+          >展開</button>
+        )}
         <button className="btn" onClick={copy} disabled={!result}>
           {copied ? "已複製" : task === "translate" ? "複製譯文" : "複製"}
         </button>
@@ -385,6 +362,9 @@ export function Popup() {
         ref={fileInput} type="file" hidden accept="image/*,audio/*,video/*"
         onChange={(e) => { useFiles(e.target.files); e.target.value = ""; }}
       />
+      {status === "done" && convo !== null && (
+        <SelectionMenu root={bodyRef} busy={thread.busy} onAsk={(a) => { setKept(true); thread.ask(a); }} />
+      )}
       {dragging && <div className="drop-veil">放開以{TASKS.find((t) => t.id === task)?.label}</div>}
     </div>
   );

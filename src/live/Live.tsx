@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { closeLive, liveInfo, livePickScreen, liveSetProvider, liveStart, liveStop, PROVIDERS, showSettings,
+import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liveStar, liveStart, liveStop, PROVIDERS, showSettings,
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
-type Turn = { input: string; output: string };
+type Turn = { input: string; output: string; starred?: boolean };
 
 const STATE_LABEL: Record<State, string> = {
   idle: "未開始", connecting: "連線中…", listening: "聆聽中", reconnecting: "重新連線中…",
@@ -161,6 +161,19 @@ export function Live() {
   const effective = sources.filter((s) => (s === "screen" ? canScreen : canAudio));
 
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const ask = (t: Turn) => {
+    liveFollowUp(t.input.trim(), t.output.trim()).catch((e) => setMessage(String(e)));
+  };
+  const star = (i: number) => {
+    const t = turns[i];
+    if (t.starred) return;
+    setTurns((ts) => ts.map((x, j) => (j === i ? { ...x, starred: true } : x)));
+    liveStar(t.input.trim(), t.output.trim()).catch((e) => {
+      setTurns((ts) => ts.map((x, j) => (j === i ? { ...x, starred: false } : x)));
+      setMessage(String(e));
+    });
+  };
+
   const empty = !turns.length && !current.input && !current.output;
 
   return (
@@ -257,9 +270,16 @@ export function Live() {
         {empty && state === "listening" && <p className="lv-hint">正在聆聽…說話或播放聲音就會開始翻譯。</p>}
 
         {turns.map((t, i) => (
-          <div className="lv-turn" key={i}>
+          <div className={`lv-turn${t.starred ? " starred" : ""}`} key={i}>
             {t.input && <p className="lv-in">{t.input.trim()}</p>}
             <Output text={t.output} />
+            <div className="lv-acts">
+              <button onClick={() => ask(t)} title="開對話視窗追問這一句，Live 繼續進行">追問</button>
+              <button
+                onClick={() => star(i)} aria-pressed={!!t.starred}
+                title={t.starred ? "已存到歷史紀錄" : "把這一句存到歷史紀錄"}
+              >{t.starred ? "★ 已收藏" : "☆ 收藏"}</button>
+            </div>
           </div>
         ))}
         {(current.input || current.output) && (
