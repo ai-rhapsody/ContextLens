@@ -1,11 +1,16 @@
-# Builds signed installers for every platform and publishes a GitHub release with latest.json,
-# the file the in-app updater reads. Start it either way:
-#   - Actions tab -> release -> Run workflow (the tag v<version> is created from tauri.conf.json)
-#   - push a tag like v0.2.0
+# Builds signed installers and publishes a GitHub release with latest.json, the file the
+# in-app updater reads. Installed apps with a lower version offer the update on their next check.
+# Start it either way:
+#   - Actions tab -> release -> Run workflow, type a version such as 0.1.1
+#   - push a tag like v0.2.0 (builds every platform)
 name: release
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version to release, e.g. 0.1.1 (must be higher than the installed one)"
+        required: true
+        type: string
       platforms:
         description: "Which installers to build"
         type: choice
@@ -22,10 +27,34 @@ jobs:
       fail-fast: false
       matrix:
         # Run workflow defaults to Windows only (fast); a pushed tag or "all" builds every platform.
-        include: ${{ fromJSON(inputs.platforms == 'windows' && '[{"os":"windows-latest","args":""}]' || '[{"os":"macos-latest","args":"--target aarch64-apple-darwin"},{"os":"macos-latest","args":"--target x86_64-apple-darwin"},{"os":"ubuntu-22.04","args":""},{"os":"windows-latest","args":""}]') }}
+        include: ${{ fromJSON(inputs.platforms == 'windows' && '[{"os":"windows-latest","args":"--bundles nsis"}]' || '[{"os":"macos-latest","args":"--target aarch64-apple-darwin"},{"os":"macos-latest","args":"--target x86_64-apple-darwin"},{"os":"ubuntu-22.04","args":""},{"os":"windows-latest","args":"--bundles nsis"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set the version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          V="${INPUT_VERSION:-${REF_NAME#v}}"
+          V="${V#v}"
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Version must look like 0.1.1, got '$V'"; exit 1
+          fi
+          if [ -n "$INPUT_VERSION" ] && git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null; then
+            echo "::error::v$V is already released. Pick a higher version."; exit 1
+          fi
+          node -e '
+            const fs = require("fs"), v = process.argv[1];
+            for (const f of ["src-tauri/tauri.conf.json", "package.json"]) {
+              const j = JSON.parse(fs.readFileSync(f, "utf8")); j.version = v;
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+            }
+            const c = "src-tauri/Cargo.toml";
+            fs.writeFileSync(c, fs.readFileSync(c, "utf8").replace(/^version = ".*"$/m, `version = "${v}"`));
+          ' "$V"
+          echo "Releasing v$V"
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
