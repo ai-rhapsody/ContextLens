@@ -20,7 +20,9 @@
 | ChatGPT（OpenAI） | ✓ | ✓ | | | ✓ Realtime API | 只有 search 模型 |
 | Claude（Anthropic） | ✓ | ✓ | | | | ✓ |
 
-實際能力依模型名稱判斷，規則在 `crates/core/src/caps.rs`。
+實際能力依模型名稱判斷，規則在 `crates/core/src/caps.rs`。模型用下拉選單挑選（清單在 `src/lib/models.ts`，2026 年 10 月整理），也可以選「自訂…」輸入任何名稱。
+
+預設模型：Gemini `gemini-3.5-flash-lite`（即時 `gemini-3.8-live`）、ChatGPT `gpt-6-luna`（即時 `gpt-realtime-2.1-mini`）、Claude `claude-opus-5-5`。舊版的預設值會自動升級，自己選過的模型不變。
 
 ## 開發
 

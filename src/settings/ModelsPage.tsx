@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import {
   deleteApiKey, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider, type Settings,
 } from "../lib/api";
+import { LIVE_PRESETS, MODEL_PRESETS } from "../lib/models";
 import { CapsRow } from "./Caps";
-import { TextField } from "./TextField";
+import { ModelPicker } from "./ModelPicker";
 
 type Note = { kind: "ok" | "err"; text: string } | null;
 
@@ -13,8 +14,8 @@ const LIVE_FIELD: Partial<Record<Provider, "gemini_live" | "openai_realtime">> =
   openai: "openai_realtime",
 };
 const LIVE_HINT: Partial<Record<Provider, string>> = {
-  gemini: "例如 gemini-live-2.5-flash-preview",
-  openai: "例如 gpt-realtime",
+  gemini: "例如 gemini-3.8-live",
+  openai: "例如 gpt-realtime-2.1",
 };
 
 function ProviderRow(props: {
@@ -48,18 +49,18 @@ function ProviderRow(props: {
       </div>
       <div className="provider-line">
         <span className="muted" style={{ width: 40 }}>模型</span>
-        <TextField
-          value={settings.models[id]} ariaLabel={`${props.name} 模型`}
-          onCommit={(v) => v && props.commit({ ...settings, models: { ...settings.models, [id]: v } })}
+        <ModelPicker
+          value={settings.models[id]} presets={MODEL_PRESETS[id]} ariaLabel={`${props.name} 模型`}
+          onCommit={(v) => props.commit({ ...settings, models: { ...settings.models, [id]: v } })}
         />
       </div>
       {LIVE_FIELD[id] && (
         <div className="provider-line">
           <span className="muted" style={{ width: 40 }} title="Live 即時翻譯用的模型">即時</span>
-          <TextField
-            value={settings.models[LIVE_FIELD[id]!]} ariaLabel={`${props.name} 即時模型`}
+          <ModelPicker
+            value={settings.models[LIVE_FIELD[id]!]} presets={LIVE_PRESETS[id] ?? []} ariaLabel={`${props.name} 即時模型`}
             placeholder={LIVE_HINT[id]}
-            onCommit={(v) => v && props.commit({ ...settings, models: { ...settings.models, [LIVE_FIELD[id]!]: v } })}
+            onCommit={(v) => props.commit({ ...settings, models: { ...settings.models, [LIVE_FIELD[id]!]: v } })}
           />
         </div>
       )}

@@ -108,11 +108,11 @@ pub struct Models {
 impl Default for Models {
     fn default() -> Self {
         Self {
-            gemini: "gemini-2.5-flash".into(),
-            openai: "gpt-5-mini".into(),
-            anthropic: "claude-haiku-5-5".into(),
-            gemini_live: "gemini-live-2.5-flash-preview".into(),
-            openai_realtime: "gpt-realtime".into(),
+            gemini: "gemini-3.5-flash-lite".into(),
+            openai: "gpt-6-luna".into(),
+            anthropic: "claude-opus-5-5".into(),
+            gemini_live: "gemini-3.8-live".into(),
+            openai_realtime: "gpt-realtime-2.1-mini".into(),
         }
     }
 }
@@ -161,7 +161,33 @@ impl Default for Settings {
     }
 }
 
+/// Defaults of earlier versions. A setting that still holds one was never chosen by the user,
+/// so it moves to the current default; anything the user picked stays.
+const OLD_DEFAULTS: &[&str] = &[
+    "gemini-2.5-flash",
+    "gpt-5-mini",
+    "claude-haiku-5-5",
+    "gemini-live-2.5-flash-preview",
+    "gpt-realtime",
+];
+
 impl Settings {
+    pub fn upgrade_defaults(&mut self) {
+        let new = Models::default();
+        let m = &mut self.models;
+        for (field, fresh) in [
+            (&mut m.gemini, new.gemini),
+            (&mut m.openai, new.openai),
+            (&mut m.anthropic, new.anthropic),
+            (&mut m.gemini_live, new.gemini_live),
+            (&mut m.openai_realtime, new.openai_realtime),
+        ] {
+            if OLD_DEFAULTS.contains(&field.as_str()) {
+                *field = fresh;
+            }
+        }
+    }
+
     pub fn model_for(&self, provider: Provider) -> &str {
         match provider {
             Provider::Gemini => &self.models.gemini,
@@ -219,7 +245,9 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"save_history":false}"#).unwrap();
         assert!(!s.save_history);
         assert_eq!(s.hotkeys.len(), 3);
-        assert_eq!(s.models.anthropic, "claude-haiku-5-5");
+        assert_eq!(s.models.anthropic, "claude-opus-5-5");
+        assert_eq!(s.models.gemini, "gemini-3.5-flash-lite");
+        assert_eq!(s.models.gemini_live, "gemini-3.8-live");
     }
 
     #[test]
@@ -240,6 +268,20 @@ mod tests {
         // Written back in the new shape, without the legacy field.
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"source\":\"selection\"") && !json.contains("action"));
+    }
+
+    #[test]
+    fn old_defaults_upgrade_but_user_choices_stay() {
+        let mut s: Settings = serde_json::from_str(
+            r#"{"models":{"gemini":"gemini-2.5-flash","openai":"gpt-6.1-sol","anthropic":"claude-haiku-5-5","gemini_live":"gemini-live-2.5-flash-preview"}}"#,
+        )
+        .unwrap();
+        s.upgrade_defaults();
+        assert_eq!(s.models.gemini, "gemini-3.5-flash-lite");
+        assert_eq!(s.models.openai, "gpt-6.1-sol"); // chosen by the user
+        assert_eq!(s.models.anthropic, "claude-opus-5-5");
+        assert_eq!(s.models.gemini_live, "gemini-3.8-live");
+        assert_eq!(s.models.openai_realtime, "gpt-realtime-2.1-mini");
     }
 
     #[test]

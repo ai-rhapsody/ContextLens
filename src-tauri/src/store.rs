@@ -31,12 +31,15 @@ pub fn save_history(app: &AppHandle, history: &History) -> Result<(), String> {
 }
 
 /// Missing or unreadable settings fall back to defaults so the app always starts.
+/// Model names still at an old default move to the current one.
 pub fn load(app: &AppHandle) -> Settings {
-    path(app)
+    let mut s: Settings = path(app)
         .ok()
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    s.upgrade_defaults();
+    s
 }
 
 pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {

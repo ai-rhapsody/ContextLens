@@ -13,6 +13,36 @@ pub struct ChatRequest {
     /// Let the model search the web (Gemini: Google Search; Claude: web search;
     /// OpenAI: only its search models).
     pub web_search: bool,
+    /// A quick job (translation): ask reasoning models to think briefly, for speed.
+    pub quick: bool,
+}
+
+/// Claude models of the 5 generation take `output_config.effort` and the newer web search tool;
+/// older ones reject the first and lack the second.
+fn claude_generation_5(model: &str) -> bool {
+    ["claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable-5", "claude-mythos-5"]
+        .iter()
+        .any(|p| model.starts_with(p))
+}
+
+/// Web search tool version: the dynamic-filtering one where the model supports it.
+fn claude_web_search_type(model: &str) -> &'static str {
+    let dynamic = ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"];
+    if dynamic.iter().any(|p| model.starts_with(p)) {
+        "web_search_20260209"
+    } else {
+        "web_search_20250305"
+    }
+}
+
+/// Models that offer server-side refusal fallback ("default" routing).
+fn claude_has_fallbacks(model: &str) -> bool {
+    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-5"].iter().any(|p| model.starts_with(p))
+}
+
+/// OpenAI reasoning models accept `reasoning_effort`; older chat models reject it.
+fn openai_reasons(model: &str) -> bool {
+    ["gpt-5", "gpt-6", "o1", "o3", "o4"].iter().any(|p| model.starts_with(p)) && !model.contains("chat")
 }
 
 /// One piece of a streamed answer.
@@ -69,6 +99,9 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
             if req.web_search && can_search(provider, model) {
                 body["web_search_options"] = json!({});
             }
+            if req.quick && openai_reasons(model) {
+                body["reasoning_effort"] = json!("low");
+            }
             HttpPlan {
                 url: "https://api.openai.com/v1/chat/completions".into(),
                 headers: vec![("authorization", format!("Bearer {api_key}"))],
@@ -84,16 +117,18 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
                 "messages": [{ "role": "user", "content": anthropic_content(req) }],
             });
             if req.web_search {
-                body["tools"] = json!([{ "type": "web_search_20250305", "name": "web_search", "max_uses": 3 }]);
+                body["tools"] = json!([{ "type": claude_web_search_type(model), "name": "web_search", "max_uses": 3 }]);
             }
-            HttpPlan {
-                url: "https://api.anthropic.com/v1/messages".into(),
-                headers: vec![
-                    ("x-api-key", api_key.to_string()),
-                    ("anthropic-version", "2023-06-01".into()),
-                ],
-                body,
+            if claude_generation_5(model) {
+                body["output_config"] = json!({ "effort": if req.quick { "low" } else { "medium" } });
             }
+            let mut headers = vec![("x-api-key", api_key.to_string()), ("anthropic-version", "2023-06-01".into())];
+            // If the model declines, the API reruns the request on a suitable fallback model.
+            if claude_has_fallbacks(model) {
+                body["fallbacks"] = json!("default");
+                headers.push(("anthropic-beta", "server-side-fallback-2026-07-01".into()));
+            }
+            HttpPlan { url: "https://api.anthropic.com/v1/messages".into(), headers, body }
         }
         Provider::Gemini => {
             let mut body = json!({
@@ -204,6 +239,9 @@ pub fn extract_delta(provider: Provider, data: &str) -> Result<Vec<Delta>, Provi
                     v.pointer("/error/message").and_then(Value::as_str).unwrap_or("Anthropic 串流錯誤").into(),
                 ))
             }
+            Some("message_delta") if v.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("refusal") => {
+                return Err(ProviderError::Stream("Claude 婉拒處理這段內容。可以改用其他服務試試。".into()));
+            }
             _ => {}
         },
         Provider::Gemini => {
@@ -308,7 +346,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn req() -> ChatRequest {
-        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![], web_search: false }
+        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![], web_search: false, quick: false }
     }
 
     fn req_with_image() -> ChatRequest {
@@ -385,6 +423,38 @@ mod tests {
             })
             .collect();
         (!t.is_empty()).then_some(t)
+    }
+
+    #[test]
+    fn claude_5_gets_effort_new_search_tool_and_fallbacks() {
+        let quick = ChatRequest { quick: true, web_search: true, ..req() };
+        let opus = plan(Provider::Anthropic, "claude-opus-5-5", "K", &quick);
+        assert_eq!(opus.body["output_config"]["effort"], "low");
+        assert_eq!(opus.body["tools"][0]["type"], "web_search_20260209");
+        assert_eq!(opus.body["fallbacks"], "default");
+        assert!(opus.headers.contains(&("anthropic-beta", "server-side-fallback-2026-07-01".to_string())));
+        let haiku = plan(Provider::Anthropic, "claude-haiku-5-5", "K", &ChatRequest { web_search: true, ..req() });
+        assert_eq!(haiku.body["output_config"]["effort"], "medium");
+        assert_eq!(haiku.body["tools"][0]["type"], "web_search_20250305");
+        assert!(haiku.body.get("fallbacks").is_none());
+        let old = plan(Provider::Anthropic, "claude-haiku-4-5", "K", &quick);
+        assert!(old.body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn openai_reasoning_effort_only_for_reasoning_models() {
+        let quick = ChatRequest { quick: true, ..req() };
+        assert_eq!(plan(Provider::OpenAi, "gpt-6-luna", "K", &quick).body["reasoning_effort"], "low");
+        assert!(plan(Provider::OpenAi, "gpt-4o", "K", &quick).body.get("reasoning_effort").is_none());
+        assert!(plan(Provider::OpenAi, "gpt-6-luna", "K", &req()).body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn claude_refusals_become_errors() {
+        let d = r#"{"type":"message_delta","delta":{"stop_reason":"refusal"}}"#;
+        assert!(extract_delta(Provider::Anthropic, d).is_err());
+        let ok = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#;
+        assert!(extract_delta(Provider::Anthropic, ok).unwrap().is_empty());
     }
 
     #[test]

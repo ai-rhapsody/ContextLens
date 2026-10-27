@@ -624,6 +624,7 @@ async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<Stri
         user: "ping".into(),
         media: vec![],
         web_search: false,
+        quick: true,
     };
     stream(&state, args.provider, &model, &req, None, |_| true).await?;
     Ok(model)

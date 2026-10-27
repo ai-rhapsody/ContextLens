@@ -289,3 +289,6 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 .lv-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .lv-sub .field { height: 26px; font-size: 12px; padding: 0 6px; }
 .lv-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.model-picker { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.model-picker select { flex: 1; min-width: 0; }
+.model-picker .field:not(select) { flex: 1; min-width: 0; }

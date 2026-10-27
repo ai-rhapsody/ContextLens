@@ -16,8 +16,8 @@ pub enum Backend {
     OpenAiRealtime,
 }
 
-/// Transcription model OpenAI uses for what the user said.
-const OPENAI_TRANSCRIBE: &str = "gpt-4o-mini-transcribe";
+/// Transcription model OpenAI uses for what the user said (low-latency streaming).
+const OPENAI_TRANSCRIBE: &str = "gpt-live-transcribe";
 
 impl Backend {
     pub fn for_provider(p: Provider) -> Option<Self> {
@@ -418,7 +418,7 @@ mod tests {
 
     fn cfg(text_output: bool) -> LiveConfig<'static> {
         LiveConfig {
-            model: "gemini-live-x", target_language: "繁體中文", tutor: false, text_output,
+            model: "gemini-3.8-live", target_language: "繁體中文", tutor: false, text_output,
             resume_handle: None, screen: ScreenMode::None,
         }
     }
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn setup_asks_for_text_and_transcribes_input() {
         let m = setup_message(&cfg(true));
-        assert_eq!(m["setup"]["model"], "models/gemini-live-x");
+        assert_eq!(m["setup"]["model"], "models/gemini-3.8-live");
         assert_eq!(m["setup"]["generationConfig"]["responseModalities"][0], "TEXT");
         assert!(m["setup"]["inputAudioTranscription"].is_object());
         assert!(m["setup"].get("outputAudioTranscription").is_none());

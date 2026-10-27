@@ -499,6 +499,7 @@ async fn reader(
                     user: "Here is the screen now. Translate only the new text.".into(),
                     media: vec![Media { mime: "image/jpeg".into(), data_b64: f, name: None }],
                     web_search: false,
+                    quick: true,
                 };
                 let mut out = String::new();
                 let stopped = stop.clone();
