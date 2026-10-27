@@ -292,3 +292,5 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 .model-picker { flex: 1; display: flex; gap: 8px; min-width: 0; }
 .model-picker select { flex: 1; min-width: 0; }
 .model-picker .field:not(select) { flex: 1; min-width: 0; }
+.btn.pin { width: 32px; padding: 0; display: inline-grid; place-items: center; color: var(--faint); }
+.btn.pin.on { color: var(--text); background: var(--active); }

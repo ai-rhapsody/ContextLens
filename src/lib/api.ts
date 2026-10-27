@@ -28,6 +28,8 @@ export interface Settings {
   hotkeys: Hotkey[];
   save_history: boolean;
   popup_size: [number, number] | null;
+  popup_pinned: boolean;
+  popup_pos: [number, number] | null;
 }
 
 export interface Media {

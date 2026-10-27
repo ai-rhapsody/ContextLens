@@ -104,6 +104,7 @@ export function Popup() {
   const pickUp = useCallback(async () => {
     const [cap, s, info] = await Promise.all([takePendingCapture(), getSettings(), providerInfo()]);
     setSettings(s);
+    setPinned(s.popup_pinned);
     settingsRef.current = s;
     infoRef.current = info;
     if (!cap) return;
@@ -243,10 +244,18 @@ export function Popup() {
           </span>
         )}
         <button
-          className={`btn quiet${pinned ? " on" : ""}`} onClick={togglePin} aria-pressed={pinned}
-          title={pinned ? "取消固定：新的翻譯會跳到游標旁" : "固定位置：新的翻譯會在這裡更新"}
+          className={`btn quiet pin${pinned ? " on" : ""}`} onClick={togglePin} aria-pressed={pinned}
+          aria-label="固定視窗位置"
+          title={pinned
+            ? "已固定：視窗留在這裡，新的結果在原處更新。按一下取消固定"
+            : "未固定：視窗會出現在游標旁。按一下固定在目前位置"}
         >
-          {pinned ? "已固定" : "固定"}
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M6 1.5h4l-.6 4.2 2.6 2.3v1.5H8.75V14L8 15l-.75-1V9.5H4V8l2.6-2.3L6 1.5Z"
+              fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"
+            />
+          </svg>
         </button>
         <button className="btn quiet" onClick={() => hidePopup()} aria-label="關閉" title="關閉（Esc）">✕</button>
       </div>

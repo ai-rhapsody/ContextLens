@@ -100,8 +100,12 @@ fn show_popup(app: &AppHandle, capture: Capture) {
     let Some(win) = popup(app) else { return };
     let state = app.state::<AppState>();
     *state.pending.lock().unwrap() = Some(capture);
-    let stay = state.popup_pinned.load(Ordering::SeqCst) && win.is_visible().unwrap_or(false);
-    if !stay {
+    // Pinned: back to where the user put it, even after it was closed or the app restarted.
+    if state.popup_pinned.load(Ordering::SeqCst) {
+        if let Some([x, y]) = state.settings.lock().unwrap().popup_pos {
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+    } else {
         place_near_cursor(app, &win);
     }
     let _ = win.show();
@@ -110,15 +114,23 @@ fn show_popup(app: &AppHandle, capture: Capture) {
     let _ = app.emit_to("popup", "capture", ());
 }
 
+/// Saves the translation window's size, and its position when pinned.
 fn remember_popup_size(app: &AppHandle) {
     let Some(win) = popup(app) else { return };
     let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) else { return };
     let logical = size.to_logical::<f64>(scale);
     let new = Some([logical.width.round() as u32, logical.height.round() as u32]);
+    let pinned = app.state::<AppState>().popup_pinned.load(Ordering::SeqCst);
+    let pos = win.outer_position().ok().map(|p| [p.x, p.y]);
     let state = app.state::<AppState>();
     let mut s = state.settings.lock().unwrap();
-    if s.popup_size != new {
-        s.popup_size = new;
+    let mut changed = s.popup_size != new;
+    s.popup_size = new;
+    if pinned && pos.is_some() && s.popup_pos != pos {
+        s.popup_pos = pos;
+        changed = true;
+    }
+    if changed {
         let _ = store::save(app, &s);
     }
 }
@@ -347,8 +359,13 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<(), String> {
     settings.validate()?;
-    // The popup size is owned by the window, not the settings page.
-    settings.popup_size = state.settings.lock().unwrap().popup_size;
+    // The popup's size, pin and position are owned by the window, not the settings page.
+    {
+        let current = state.settings.lock().unwrap();
+        settings.popup_size = current.popup_size;
+        settings.popup_pinned = current.popup_pinned;
+        settings.popup_pos = current.popup_pos;
+    }
     // Register first: if a hotkey is taken by another app, nothing is saved.
     if let Err(e) = register_hotkeys(&app, &settings) {
         let old = state.settings.lock().unwrap().clone();
@@ -439,8 +456,15 @@ fn hide_popup(app: AppHandle) {
 }
 
 #[tauri::command]
-fn set_popup_pinned(state: State<AppState>, pinned: bool) {
+fn set_popup_pinned(app: AppHandle, state: State<AppState>, pinned: bool) {
     state.popup_pinned.store(pinned, Ordering::SeqCst);
+    let pos = popup(&app).and_then(|w| w.outer_position().ok()).map(|p| [p.x, p.y]);
+    let mut s = state.settings.lock().unwrap();
+    s.popup_pinned = pinned;
+    if pinned {
+        s.popup_pos = pos;
+    }
+    let _ = store::save(&app, &s);
 }
 
 #[tauri::command]
@@ -806,7 +830,7 @@ pub fn run() {
                 snip: Mutex::new(None),
                 history: Mutex::new(store::load_history(&handle)),
                 generation: AtomicU64::new(0),
-                popup_pinned: AtomicBool::new(false),
+                popup_pinned: AtomicBool::new(settings.popup_pinned),
                 live: Mutex::new(None),
                 live_sources: Mutex::new(vec![live::LiveSource::Mic]),
                 live_screen: Mutex::new(None),
@@ -860,6 +884,15 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Dragging a pinned translation window moves where it stays.
+            if let WindowEvent::Moved(p) = event {
+                if window.label() == "popup" {
+                    let state = window.app_handle().state::<AppState>();
+                    if state.popup_pinned.load(Ordering::SeqCst) {
+                        state.settings.lock().unwrap().popup_pos = Some([p.x, p.y]);
+                    }
+                }
+            }
             // Closing a window keeps ContextLens alive in the tray so hotkeys still work.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

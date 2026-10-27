@@ -133,6 +133,10 @@ pub struct Settings {
     pub save_history: bool,
     /// Last size of the translation window, in logical pixels.
     pub popup_size: Option<[u32; 2]>,
+    /// The translation window stays where the user put it instead of following the cursor.
+    pub popup_pinned: bool,
+    /// Where a pinned translation window sits, in physical pixels.
+    pub popup_pos: Option<[i32; 2]>,
 }
 
 impl Default for Settings {
@@ -157,6 +161,8 @@ impl Default for Settings {
             live_provider: None,
             save_history: true,
             popup_size: None,
+            popup_pinned: false,
+            popup_pos: None,
         }
     }
 }
