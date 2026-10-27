@@ -1,7 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Provider = "gemini" | "openai" | "anthropic";
-export type Source = "selection" | "screen" | "clipboard_image";
+export type Source = "selection" | "screen" | "clipboard_image" | "live";
+export type LiveSource = "mic" | "system";
 
 export interface Hotkey {
   id: string;
@@ -13,7 +14,8 @@ export interface Hotkey {
 export interface Settings {
   target_language: string;
   provider: Provider;
-  models: Record<Provider, string>;
+  models: Record<Provider, string> & { gemini_live: string };
+  live_idle_minutes: number;
   hotkeys: Hotkey[];
   save_history: boolean;
   popup_size: [number, number] | null;
@@ -34,7 +36,7 @@ export interface Capture {
 
 export interface HistoryEntry {
   at_ms: number;
-  kind: "text" | "image" | "audio" | "video";
+  kind: "text" | "image" | "audio" | "video" | "live";
   source: string;
   thumb: string | null;
   result: string;
@@ -97,3 +99,25 @@ export function runTranslation(
 }
 
 export const dataUrl = (m: Media) => `data:${m.mime};base64,${m.data_b64}`;
+
+export interface LiveInfo {
+  running: boolean;
+  sources: LiveSource[];
+  tutor: boolean;
+  model: string;
+  model_ok: boolean;
+  system_audio: boolean;
+}
+
+export type LiveEvent =
+  | { kind: "status"; state: "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error"; message: string | null }
+  | { kind: "input"; text: string }
+  | { kind: "output"; text: string }
+  | { kind: "turn_complete" }
+  | { kind: "level"; value: number };
+
+export const liveInfo = () => invoke<LiveInfo>("live_info");
+export const liveStart = (sources: LiveSource[], tutor: boolean) => invoke<void>("live_start", { sources, tutor });
+export const liveStop = () => invoke<void>("live_stop");
+export const openLive = () => invoke<void>("open_live");
+export const closeLive = () => invoke<void>("close_live");

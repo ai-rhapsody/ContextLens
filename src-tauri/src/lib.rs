@@ -1,5 +1,6 @@
 mod capture;
 mod imaging;
+mod live;
 mod secrets;
 mod snip;
 mod store;
@@ -40,6 +41,9 @@ struct AppState {
     generation: AtomicU64,
     /// A pinned popup stays where the user put it instead of jumping to the cursor.
     popup_pinned: AtomicBool,
+    live: Mutex<Option<live::LiveHandle>>,
+    /// Sources of the last Live session, reused when a hotkey starts the next one.
+    live_sources: Mutex<Vec<live::LiveSource>>,
     http: contextlens_core::reqwest::Client,
 }
 
@@ -57,6 +61,14 @@ fn popup(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("popup")
 }
 
+/// A window that has never been shown can report no size yet; fall back to a logical size.
+fn outer_size_or(win: &WebviewWindow, fallback: [u32; 2], scale: f64) -> (f64, f64) {
+    match win.outer_size() {
+        Ok(s) if s.width > 50 && s.height > 50 => (s.width as f64, s.height as f64),
+        _ => (fallback[0] as f64 * scale, fallback[1] as f64 * scale),
+    }
+}
+
 fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
     let Ok(cursor) = app.cursor_position() else { return };
     let (mut x, mut y) = (cursor.x + 16.0, cursor.y + 16.0);
@@ -68,15 +80,8 @@ fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
         .or_else(|| win.current_monitor().ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
     if let Some(mon) = monitor {
-        // A window that has never been shown can report no size yet; use its configured size.
-        let scale = mon.scale_factor();
-        let (w, h) = match win.outer_size() {
-            Ok(s) if s.width > 50 && s.height > 50 => (s.width as f64, s.height as f64),
-            _ => {
-                let [lw, lh] = app.state::<AppState>().settings.lock().unwrap().popup_size.unwrap_or([440, 420]);
-                (lw as f64 * scale, lh as f64 * scale)
-            }
-        };
+        let configured = app.state::<AppState>().settings.lock().unwrap().popup_size.unwrap_or([440, 420]);
+        let (w, h) = outer_size_or(win, configured, mon.scale_factor());
         let (mp, ms) = (mon.position(), mon.size());
         let max_x = mp.x as f64 + ms.width as f64 - w - 8.0;
         let max_y = mp.y as f64 + ms.height as f64 - h - 8.0;
@@ -147,6 +152,66 @@ fn open_snip_window(app: &AppHandle, s: &snip::Snip) -> Result<(), String> {
     Ok(())
 }
 
+fn open_live_window(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("live") else { return };
+    if !win.is_visible().unwrap_or(false) {
+        // Bottom centre of the monitor under the cursor, like subtitles.
+        let monitor = app
+            .cursor_position()
+            .ok()
+            .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+            .or_else(|| app.primary_monitor().ok().flatten());
+        if let Some(mon) = monitor {
+            let (mp, ms) = (mon.position(), mon.size());
+            let (w, h) = outer_size_or(&win, [760, 240], mon.scale_factor());
+            let margin = 72.0 * mon.scale_factor();
+            let x = mp.x as f64 + (ms.width as f64 - w) / 2.0;
+            let y = mp.y as f64 + ms.height as f64 - h - margin;
+            let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.max(mp.y as f64).round() as i32));
+        }
+    }
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
+fn live_status(app: &AppHandle, state: &'static str, message: Option<String>) {
+    let _ = app.emit_to("live", "live", live::LiveUi::Status { state, message });
+}
+
+fn stop_live(app: &AppHandle) {
+    if let Some(h) = app.state::<AppState>().live.lock().unwrap().take() {
+        h.stop();
+    }
+    live_status(app, "stopped", None);
+    let _ = app.emit_to("live", "live-ended", ());
+}
+
+fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if let Some(old) = state.live.lock().unwrap().take() {
+        old.stop();
+    }
+    if sources.is_empty() {
+        return Err("至少要開一個聲音來源。".into());
+    }
+    let (model, target_language, idle_minutes) = {
+        let s = state.settings.lock().unwrap();
+        (s.models.gemini_live.clone(), s.target_language.clone(), s.live_idle_minutes)
+    };
+    if !caps::for_model(Provider::Gemini, &model).live {
+        return Err(format!("{model} 不是 Live 模型。到設定的「Live」頁換一個名稱含 live 的 Gemini 模型。"));
+    }
+    let api_key = secrets::get(Provider::Gemini)
+        .ok_or("Live 模式使用 Gemini，還沒設定 Gemini 的 API 金鑰。")?;
+    *state.live_sources.lock().unwrap() = sources.clone();
+    let handle = live::start(
+        app.clone(),
+        live::StartArgs { sources, tutor, model, target_language, api_key, idle_minutes },
+    )?;
+    *state.live.lock().unwrap() = Some(handle);
+    Ok(())
+}
+
 // ---------- hotkeys ----------
 
 fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Result<(), String> {
@@ -188,6 +253,18 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
                     Err(e) => failed(e),
                 };
                 show_popup(&app, capture);
+            }
+            Source::Live => {
+                let running = app.state::<AppState>().live.lock().unwrap().is_some();
+                if running {
+                    stop_live(&app);
+                } else {
+                    open_live_window(&app);
+                    let sources = app.state::<AppState>().live_sources.lock().unwrap().clone();
+                    if let Err(e) = start_live(&app, sources, tutor) {
+                        live_status(&app, "error", Some(e));
+                    }
+                }
             }
             Source::Screen => {
                 let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
@@ -356,7 +433,7 @@ async fn stream(
     .map_err(|e| e.to_string())
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -437,6 +514,57 @@ async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<Stri
     Ok(model)
 }
 
+// ---------- commands: live ----------
+
+#[derive(Serialize)]
+struct LiveInfo {
+    running: bool,
+    sources: Vec<live::LiveSource>,
+    tutor: bool,
+    model: String,
+    model_ok: bool,
+    system_audio: bool,
+}
+
+#[tauri::command]
+fn live_info(state: State<AppState>) -> LiveInfo {
+    let model = state.settings.lock().unwrap().models.gemini_live.clone();
+    let current = state.live.lock().unwrap();
+    LiveInfo {
+        running: current.is_some(),
+        sources: current.as_ref().map_or_else(|| state.live_sources.lock().unwrap().clone(), |h| h.sources.clone()),
+        tutor: current.as_ref().is_some_and(|h| h.tutor),
+        model_ok: caps::for_model(Provider::Gemini, &model).live,
+        model,
+        system_audio: live::SYSTEM_AUDIO_SUPPORTED,
+    }
+}
+
+#[tauri::command]
+async fn live_start(app: AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> Result<(), String> {
+    // Opening audio devices can block for a moment.
+    blocking(move || start_live(&app, sources, tutor)).await
+}
+
+#[tauri::command]
+fn live_stop(app: AppHandle) {
+    stop_live(&app);
+}
+
+#[tauri::command]
+fn open_live(app: AppHandle) {
+    open_live_window(&app);
+}
+
+/// Closing the caption bar ends the session; Live is billed while it runs.
+#[tauri::command]
+fn close_live(app: AppHandle) {
+    stop_live(&app);
+    if let Some(w) = app.get_webview_window("live") {
+        let _ = w.hide();
+    }
+}
+
 // ---------- commands: history ----------
 
 #[tauri::command]
@@ -488,6 +616,11 @@ pub fn run() {
             history_list,
             history_delete,
             history_clear,
+            live_info,
+            live_start,
+            live_stop,
+            open_live,
+            close_live,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -499,6 +632,8 @@ pub fn run() {
                 history: Mutex::new(store::load_history(&handle)),
                 generation: AtomicU64::new(0),
                 popup_pinned: AtomicBool::new(false),
+                live: Mutex::new(None),
+                live_sources: Mutex::new(vec![live::LiveSource::Mic]),
                 http: contextlens_core::http_client(),
             });
             if let Err(e) = register_hotkeys(&handle, &settings) {
@@ -518,6 +653,7 @@ pub fn run() {
                 app,
                 &[
                     &MenuItem::with_id(app, "translator", "開啟翻譯視窗", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "live", "Live 即時翻譯", true, None::<&str>)?,
                     &MenuItem::with_id(app, "settings", "設定", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "結束 ContextLens", true, None::<&str>)?,
                 ],
@@ -529,6 +665,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id.as_ref() {
                     "translator" => show_popup(app, Capture::default()),
+                    "live" => open_live_window(app),
                     "settings" => open_settings(app),
                     "quit" => app.exit(0),
                     _ => {}
@@ -552,6 +689,10 @@ pub fn run() {
                 api.prevent_close();
                 if window.label() == "popup" {
                     remember_popup_size(window.app_handle());
+                }
+                // Closing the caption bar ends the session; Live is billed while it runs.
+                if window.label() == "live" {
+                    stop_live(window.app_handle());
                 }
                 let _ = window.hide();
             }

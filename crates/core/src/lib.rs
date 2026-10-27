@@ -3,6 +3,7 @@
 
 pub mod caps;
 pub mod history;
+pub mod live;
 pub mod media;
 pub mod prompt;
 pub mod provider;

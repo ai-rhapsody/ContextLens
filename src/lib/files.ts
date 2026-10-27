@@ -24,7 +24,7 @@ export function kindOf(mime: string): "image" | "audio" | "video" | null {
   return k === "image" || k === "audio" || k === "video" ? k : null;
 }
 
-export const KIND_LABEL = { image: "圖片", audio: "音訊", video: "影片" } as const;
+export const KIND_LABEL = { image: "圖片", audio: "音訊", video: "影片", live: "Live" } as const;
 
 export function fileToMedia(file: File): Promise<Media> {
   const mime = mimeFor(file.name, file.type);

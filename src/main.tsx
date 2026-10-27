@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Popup } from "./popup/Popup";
 import { SettingsApp } from "./settings/SettingsApp";
 import { Snip } from "./snip/Snip";
+import { Live } from "./live/Live";
 import "./styles.css";
 
 function windowLabel(): string {
@@ -30,6 +31,6 @@ window.addEventListener("unhandledrejection", (e) => showFatal(String(e.reason))
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {{ popup: <Popup />, snip: <Snip /> }[windowLabel()] ?? <SettingsApp />}
+    {{ popup: <Popup />, snip: <Snip />, live: <Live /> }[windowLabel()] ?? <SettingsApp />}
   </React.StrictMode>,
 );

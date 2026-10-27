@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the settings, popup and snipping windows",
+  "description": "Permissions for the settings, popup, snipping and live windows",
   "windows": [
     "main",
     "popup",
-    "snip"
+    "snip",
+    "live"
   ],
   "permissions": [
     "core:default",

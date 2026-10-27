@@ -13,6 +13,7 @@
 - **教學模式**：翻譯 → 結構 → 用法 → 延伸知識（媒體會先列出原文）
 - **思考中動畫**：第一個字出現前顯示隨機流動的漸層骨架
 - **模型能力對照**：依服務商與模型名稱判斷能讀取的內容；預設模型讀不了時，一鍵改用其他有金鑰的服務
+- **Live 即時翻譯**（Gemini Live 模型）：畫面底部的字幕列持續翻譯麥克風或系統聲音（系統聲音目前限 Windows），可開教學註解；沒有聲音時自動暫停，結束後存進歷史紀錄
 - **歷史紀錄**：存在本機，可搜尋、刪除，可關閉
 - Gemini、OpenAI、Anthropic，金鑰存在系統鑰匙圈
 - 應用內線上更新（簽章驗證）
@@ -37,7 +38,7 @@ cargo test -p contextlens-core   # 供應商串流、提示詞、設定的測試
 npm run tauri build    # 打包
 ```
 
-Linux 另需 `libxdo-dev`（模擬複製按鍵）。
+Linux 另需 `libxdo-dev`（模擬複製按鍵）、`libpipewire-0.3-dev`、`libclang-dev`（螢幕擷取）、`libasound2-dev`（Live 錄音）。
 
 ### 架構
 

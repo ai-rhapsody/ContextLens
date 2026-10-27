@@ -26,3 +26,7 @@ tauri-plugin-single-instance = "2"
 xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 base64 = "0.22"
+cpal = "0.18.2"
+tokio = { version = "1.54.1", features = ["sync", "time", "macros", "rt"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3.34"

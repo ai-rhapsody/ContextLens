@@ -6,6 +6,7 @@ const SOURCES: { id: Source; label: string; needsImage: boolean }[] = [
   { id: "selection", label: "選取的文字", needsImage: false },
   { id: "screen", label: "螢幕擷取（區域、視窗、全螢幕）", needsImage: true },
   { id: "clipboard_image", label: "剪貼簿裡的圖片", needsImage: true },
+  { id: "live", label: "Live 即時翻譯（開／關）", needsImage: false },
 ];
 
 function Recorder({ value, onPick }: { value: string; onPick: (acc: string) => void }) {

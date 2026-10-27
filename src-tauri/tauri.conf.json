@@ -42,6 +42,22 @@
         "create": false,
         "dragDropEnabled": false,
         "resizable": true
+      },
+      {
+        "label": "live",
+        "title": "ContextLens Live",
+        "url": "index.html",
+        "width": 760,
+        "height": 240,
+        "minWidth": 420,
+        "minHeight": 140,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "resizable": true,
+        "create": false
       }
     ]
   },

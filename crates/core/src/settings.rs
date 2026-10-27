@@ -40,6 +40,8 @@ pub enum Source {
     Screen,
     /// The image on the clipboard (e.g. after Win+Shift+S).
     ClipboardImage,
+    /// Starts or stops a Live session.
+    Live,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -81,6 +83,8 @@ pub struct Models {
     pub gemini: String,
     pub openai: String,
     pub anthropic: String,
+    /// The Gemini model used for Live sessions; only models the capability table marks as live.
+    pub gemini_live: String,
 }
 
 impl Default for Models {
@@ -89,6 +93,7 @@ impl Default for Models {
             gemini: "gemini-2.5-flash".into(),
             openai: "gpt-5-mini".into(),
             anthropic: "claude-haiku-5-5".into(),
+            gemini_live: "gemini-live-2.5-flash-preview".into(),
         }
     }
 }
@@ -101,6 +106,8 @@ pub struct Settings {
     pub provider: Provider,
     pub models: Models,
     pub hotkeys: Vec<Hotkey>,
+    /// Live sessions pause by themselves after this many minutes without sound (0 = never).
+    pub live_idle_minutes: u32,
     /// Keep finished translations in the history list.
     pub save_history: bool,
     /// Last size of the translation window, in logical pixels.
@@ -124,6 +131,7 @@ impl Default for Settings {
                 hk("default-tutor", "CommandOrControl+Shift+E", Source::Selection, true),
                 hk("default-screen", "CommandOrControl+Alt+S", Source::Screen, false),
             ],
+            live_idle_minutes: 3,
             save_history: true,
             popup_size: None,
         }
@@ -140,6 +148,9 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.models.gemini_live.trim().is_empty() {
+            return Err("Live 模型名稱不能是空的".into());
+        }
         if self.target_language.trim().is_empty() {
             return Err("目標語言不能是空的".into());
         }

@@ -9,8 +9,12 @@
 - [x] Thinking skeleton with a random aurora
 - [x] In-app updates (signed, via GitHub releases)
 
+- [x] Live mode, step 1 and 2: microphone and system audio (Windows loopback) to Gemini Live, caption bar, tutor notes, idle auto-pause, session resumption, history
+
 ## Next
-- [ ] **Live mode** (Gemini Live models only): stream microphone or system audio, and optionally screen frames, for real-time interpretation. Needs a WebSocket session in Rust (keys stay in Rust) and audio capture in the webview.
+- [ ] Live mode, step 3: screen frames (about one per second) alongside the audio
+- [ ] Live: system audio on macOS (ScreenCaptureKit) and Linux (PulseAudio monitor)
+- [ ] Live: honour HTTPS proxies for the WebSocket connection
 - [ ] Follow-up questions in the popup ("ask about this")
 - [ ] Pronunciation (text to speech) for the source text
 - [ ] Vocabulary notebook: star history items, export to Anki CSV
