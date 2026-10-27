@@ -63,7 +63,7 @@ pub fn can_search(provider: Provider, model: &str) -> bool {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProviderError {
-    #[error("網路錯誤：{0}")]
+    #[error("{}", describe_network(.0))]
     Network(#[from] reqwest::Error),
     #[error("{provider} 回應 {status}：{message}")]
     Api {
@@ -75,6 +75,38 @@ pub enum ProviderError {
     Stream(String),
     #[error("{0}")]
     Unsupported(String),
+}
+
+/// The innermost cause of a connection failure, with a plain-language hint. reqwest's own
+/// message ("error sending request for url") says nothing about why.
+pub fn describe_network(e: &reqwest::Error) -> String {
+    let mut root = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        root = s.to_string();
+        src = s.source();
+    }
+    let hint = network_hint(&root);
+    if hint.is_empty() {
+        format!("連線失敗：{root}")
+    } else {
+        format!("連線失敗：{hint}（{root}）")
+    }
+}
+
+pub fn network_hint(cause: &str) -> &'static str {
+    let c = cause.to_lowercase();
+    if c.contains("certificate") || c.contains("unknownissuer") {
+        "無法驗證伺服器的憑證。常見原因是防毒軟體的 HTTPS 掃描或公司網路攔截了加密連線；請確認系統時間正確，或在防毒軟體中排除 ContextLens"
+    } else if c.contains("dns") || c.contains("resolve") || c.contains("no such host") || c.contains("lookup") {
+        "找不到伺服器，請檢查網路連線"
+    } else if c.contains("timed out") || c.contains("timeout") {
+        "連線逾時，請檢查網路，或稍後再試"
+    } else if c.contains("refused") || c.contains("reset") || c.contains("forcibly closed") {
+        "連線被拒絕或中斷，可能是防火牆或 Proxy 擋住了"
+    } else {
+        ""
+    }
 }
 
 /// A fully built HTTP request, kept separate from sending so it can be tested.
@@ -509,6 +541,14 @@ mod tests {
         assert_eq!(text(Provider::Gemini, d).as_deref(), Some("答案"));
         let blocked = r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#;
         assert!(extract_delta(Provider::Gemini, blocked).is_err());
+    }
+
+    #[test]
+    fn network_hints_name_the_likely_cause() {
+        assert!(network_hint("invalid peer certificate: UnknownIssuer").contains("憑證"));
+        assert!(network_hint("dns error: failed to lookup address").contains("找不到"));
+        assert!(network_hint("operation timed out").contains("逾時"));
+        assert_eq!(network_hint("something else"), "");
     }
 
     #[test]

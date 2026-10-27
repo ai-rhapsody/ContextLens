@@ -7,7 +7,11 @@ description = "Provider streaming, prompts and settings for ContextLens (no GUI 
 [dependencies]
 base64 = "0.22"
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# Trust the OS certificate store as well as the bundled roots: antivirus HTTPS scanning and
+# company networks re-sign TLS with a root that only the OS store knows. Use the OS proxy too.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "stream", "rustls-tls-webpki-roots", "rustls-tls-native-roots", "system-proxy",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
