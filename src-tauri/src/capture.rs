@@ -13,6 +13,13 @@ const COPY_MODIFIER: Key = Key::Meta;
 #[cfg(not(target_os = "macos"))]
 const COPY_MODIFIER: Key = Key::Control;
 
+// On Windows a Unicode key is typed as a character event, which does not combine with Ctrl;
+// the virtual key for C does, on every keyboard layout.
+#[cfg(target_os = "windows")]
+const COPY_KEY: Key = Key::C;
+#[cfg(not(target_os = "windows"))]
+const COPY_KEY: Key = Key::Unicode('c');
+
 pub fn selected_text() -> Result<String, String> {
     let mut clipboard = Clipboard::new().map_err(|e| format!("無法讀取剪貼簿：{e}"))?;
     let previous = clipboard.get_text().ok();
@@ -57,7 +64,7 @@ fn send_copy() -> Result<(), String> {
     }
     let err = |e: enigo::InputError| format!("無法模擬複製：{e}");
     enigo.key(COPY_MODIFIER, Direction::Press).map_err(err)?;
-    let click = enigo.key(Key::Unicode('c'), Direction::Click);
+    let click = enigo.key(COPY_KEY, Direction::Click);
     let release = enigo.key(COPY_MODIFIER, Direction::Release);
     click.map_err(err)?;
     release.map_err(err)

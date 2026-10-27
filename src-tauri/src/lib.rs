@@ -67,7 +67,7 @@ fn show_popup(app: &AppHandle, capture: Capture) {
     let _ = win.show();
     let _ = win.set_focus();
     // The popup also calls take_pending_capture on mount, so a first show cannot be missed.
-    let _ = win.emit("capture", ());
+    let _ = app.emit_to("popup", "capture", ());
 }
 
 fn open_settings(app: &AppHandle) {
@@ -148,8 +148,9 @@ struct KeyArgs {
     provider: Provider,
 }
 
+// Keychain calls can block (an OS unlock prompt, D-Bus), so these run off the main thread.
 #[tauri::command]
-fn set_api_key(args: KeyArgs, key: String) -> Result<(), String> {
+async fn set_api_key(args: KeyArgs, key: String) -> Result<(), String> {
     if key.trim().is_empty() {
         return Err("金鑰不能是空的".into());
     }
@@ -157,13 +158,13 @@ fn set_api_key(args: KeyArgs, key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn delete_api_key(args: KeyArgs) -> Result<(), String> {
+async fn delete_api_key(args: KeyArgs) -> Result<(), String> {
     secrets::delete(args.provider)
 }
 
 /// Which providers have a key stored. The keys themselves never leave Rust.
 #[tauri::command]
-fn key_status() -> Vec<(Provider, bool)> {
+async fn key_status() -> Vec<(Provider, bool)> {
     Provider::ALL.iter().map(|p| (*p, secrets::get(*p).is_some())).collect()
 }
 
@@ -246,6 +247,8 @@ async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<Stri
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first: a second launch hands over to the running app and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| open_settings(app)))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -272,6 +275,12 @@ pub fn run() {
             });
             if let Err(e) = register_hotkeys(&handle, &settings) {
                 eprintln!("hotkeys: {e}");
+            }
+
+            // Windows are declared with `create: false` and built only now, after the state
+            // above is managed; otherwise a webview can call a command before it exists.
+            for cfg in app.config().app.windows.clone() {
+                tauri::WebviewWindowBuilder::from_config(&handle, &cfg)?.build()?;
             }
 
             let menu = Menu::with_items(

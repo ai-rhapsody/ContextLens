@@ -1,7 +1,10 @@
-# Push a tag like v0.2.0 to build installers for every platform and publish a GitHub release
-# together with latest.json, the file the in-app updater reads.
+# Builds signed installers for every platform and publishes a GitHub release with latest.json,
+# the file the in-app updater reads. Start it either way:
+#   - Actions tab -> release -> Run workflow (the tag v<version> is created from tauri.conf.json)
+#   - push a tag like v0.2.0
 name: release
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 
@@ -39,9 +42,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "ContextLens ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install."
+          tagName: v__VERSION__
+          releaseName: "ContextLens v__VERSION__"
+          releaseBody: "Windows: download the .exe (or .msi). macOS: the .dmg. Linux: the .AppImage (auto-updates), .deb or .rpm."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
