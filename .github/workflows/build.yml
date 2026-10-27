@@ -1,0 +1,52 @@
+# Manual build of unsigned-updater installers for trying the app. Needs no secrets.
+# Run it from the Actions tab (workflow "build") and download the artifacts.
+name: build
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, args: "", name: windows }
+          - { os: macos-latest, args: "--target aarch64-apple-darwin", name: macos-apple-silicon }
+          - { os: macos-13, args: "--target x86_64-apple-darwin", name: macos-intel }
+          - { os: ubuntu-22.04, args: "", name: linux }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.os, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux build dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libdbus-1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev
+      - run: npm ci
+      - name: Build installers
+        shell: bash
+        run: npm run tauri build -- --config '{"bundle":{"createUpdaterArtifacts":false}}' ${{ matrix.args }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contextlens-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            target/**/release/bundle/**/*.msi
+            target/**/release/bundle/**/*.exe
+            target/**/release/bundle/**/*.dmg
+            target/**/release/bundle/**/*.deb
+            target/**/release/bundle/**/*.rpm
+            target/**/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.msi
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.rpm
+            target/release/bundle/**/*.AppImage
