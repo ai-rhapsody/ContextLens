@@ -31,6 +31,6 @@ window.addEventListener("unhandledrejection", (e) => showFatal(String(e.reason))
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {{ popup: <Popup />, snip: <Snip />, live: <Live /> }[windowLabel()] ?? <SettingsApp />}
+    {windowLabel().startsWith("snip-") ? <Snip /> : ({ popup: <Popup />, live: <Live /> }[windowLabel()] ?? <SettingsApp />)}
   </React.StrictMode>,
 );

@@ -143,29 +143,51 @@ fn open_settings(app: &AppHandle) {
     }
 }
 
-fn close_snip_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("snip") {
-        let _ = w.destroy();
+/// Overlay windows are "snip-<monitor index>".
+fn snip_index(label: &str) -> Option<usize> {
+    label.strip_prefix("snip-")?.parse().ok()
+}
+
+fn close_snip_windows(app: &AppHandle) {
+    for (label, w) in app.webview_windows() {
+        if snip_index(&label).is_some() {
+            let _ = w.destroy();
+        }
     }
 }
 
-fn open_snip_window(app: &AppHandle, s: &snip::Snip) -> Result<(), String> {
-    close_snip_window(app);
-    let win = WebviewWindowBuilder::new(app, "snip", WebviewUrl::App("index.html".into()))
-        .title("ContextLens 擷取")
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .shadow(false)
-        .visible(false)
-        .build()
-        .map_err(|e| e.to_string())?;
-    // Physical units, so the overlay covers the captured monitor pixel for pixel.
-    let _ = win.set_position(PhysicalPosition::new(s.monitor_x, s.monitor_y));
-    let _ = win.set_size(PhysicalSize::new(s.image.width(), s.image.height()));
-    let _ = win.show();
-    let _ = win.set_focus();
+/// One overlay per monitor, so each matches its monitor's scaling exactly. The one under
+/// the cursor gets the keyboard focus.
+fn open_snip_windows(app: &AppHandle, s: &snip::Snip) -> Result<(), String> {
+    close_snip_windows(app);
+    let cursor = app.cursor_position().ok();
+    let mut focus = None;
+    for (i, shot) in s.shots.iter().enumerate() {
+        let win = WebviewWindowBuilder::new(app, format!("snip-{i}"), WebviewUrl::App("index.html".into()))
+            .title("ContextLens 擷取")
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .shadow(false)
+            .visible(false)
+            .build()
+            .map_err(|e| e.to_string())?;
+        // Physical units, so the overlay covers the captured monitor pixel for pixel.
+        let _ = win.set_position(PhysicalPosition::new(shot.monitor_x, shot.monitor_y));
+        let _ = win.set_size(PhysicalSize::new(shot.image.width(), shot.image.height()));
+        let _ = win.show();
+        let under_cursor = cursor.is_some_and(|c| {
+            let (x, y) = (c.x as i32 - shot.monitor_x, c.y as i32 - shot.monitor_y);
+            x >= 0 && y >= 0 && (x as u32) < shot.image.width() && (y as u32) < shot.image.height()
+        });
+        if under_cursor || focus.is_none() {
+            focus = Some(win);
+        }
+    }
+    if let Some(w) = focus {
+        let _ = w.set_focus();
+    }
     Ok(())
 }
 
@@ -333,10 +355,9 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
                 }
             }
             Source::Screen => {
-                let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
-                match blocking(move || snip::take(x, y, tutor, task, snip::Purpose::Translate)).await {
+                match blocking(move || snip::take(tutor, task, snip::Purpose::Translate)).await {
                     Ok(s) => {
-                        let opened = open_snip_window(&app, &s);
+                        let opened = open_snip_windows(&app, &s);
                         *app.state::<AppState>().snip.lock().unwrap() = Some(s);
                         if let Err(e) = opened {
                             show_popup(&app, failed(e));
@@ -474,21 +495,33 @@ fn show_settings(app: AppHandle) {
 
 // ---------- commands: snipping overlay ----------
 
+/// The overlay asks for its own monitor's screenshot; its window label says which.
 #[tauri::command]
-fn snip_view(state: State<AppState>) -> Result<snip::SnipView, String> {
+fn snip_view(window: WebviewWindow, state: State<AppState>) -> Result<snip::SnipView, String> {
+    let index = snip_index(window.label()).ok_or("不是擷取視窗")?;
     let guard = state.snip.lock().unwrap();
-    snip::view(guard.as_ref().ok_or("沒有進行中的擷取")?)
+    snip::view(guard.as_ref().ok_or("沒有進行中的擷取")?, index)
 }
 
 #[tauri::command]
-async fn finish_snip(app: AppHandle, rect: snip::Rect, label: Option<String>) -> Result<(), String> {
-    let s = app.state::<AppState>().snip.lock().unwrap().take().ok_or("沒有進行中的擷取")?;
-    close_snip_window(&app);
+async fn finish_snip(
+    app: AppHandle,
+    window: WebviewWindow,
+    rect: snip::Rect,
+    label: Option<String>,
+) -> Result<(), String> {
+    let index = snip_index(window.label()).ok_or("不是擷取視窗")?;
+    let mut s = app.state::<AppState>().snip.lock().unwrap().take().ok_or("沒有進行中的擷取")?;
+    close_snip_windows(&app);
+    if index >= s.shots.len() {
+        return Err("沒有這個螢幕".into());
+    }
+    let shot = s.shots.swap_remove(index);
     if s.purpose == snip::Purpose::LiveTarget {
-        let (x, y, w, h) = snip::clamp(rect, s.image.width(), s.image.height()).ok_or("選取範圍太小")?;
+        let (x, y, w, h) = snip::clamp(rect, shot.image.width(), shot.image.height()).ok_or("選取範圍太小")?;
         let target = live::ScreenTarget {
-            monitor_x: s.monitor_x,
-            monitor_y: s.monitor_y,
+            monitor_x: shot.monitor_x,
+            monitor_y: shot.monitor_y,
             x, y, w, h,
             label: label.unwrap_or_else(|| format!("區域 {w}×{h}")),
         };
@@ -512,7 +545,7 @@ async fn finish_snip(app: AppHandle, rect: snip::Rect, label: Option<String>) ->
         return Ok(());
     }
     let (tutor, task) = (s.tutor, s.task);
-    let capture = match blocking(move || snip::crop(&s, rect)).await {
+    let capture = match blocking(move || snip::crop(&shot, rect)).await {
         Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
         Err(e) => Capture { tutor, task, error: Some(e), ..Default::default() },
     };
@@ -523,7 +556,7 @@ async fn finish_snip(app: AppHandle, rect: snip::Rect, label: Option<String>) ->
 #[tauri::command]
 fn cancel_snip(app: AppHandle, state: State<AppState>) {
     state.snip.lock().unwrap().take();
-    close_snip_window(&app);
+    close_snip_windows(&app);
 }
 
 // ---------- commands: translation ----------
@@ -745,9 +778,8 @@ fn open_live(app: AppHandle) {
 /// Opens the snipping overlay to choose what Live watches.
 #[tauri::command]
 async fn live_pick_screen(app: AppHandle) -> Result<(), String> {
-    let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
-    let s = blocking(move || snip::take(x, y, false, Task::Translate, snip::Purpose::LiveTarget)).await?;
-    open_snip_window(&app, &s)?;
+    let s = blocking(move || snip::take(false, Task::Translate, snip::Purpose::LiveTarget)).await?;
+    open_snip_windows(&app, &s)?;
     *app.state::<AppState>().snip.lock().unwrap() = Some(s);
     Ok(())
 }

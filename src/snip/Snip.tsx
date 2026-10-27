@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { emit, listen } from "@tauri-apps/api/event";
 import { cancelSnip, finishSnip, snipView, type Rect, type SnipView, type WinRect } from "../lib/api";
 
 type Mode = "region" | "window" | "screen";
@@ -13,16 +14,27 @@ export function Snip() {
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const done = useRef(false);
 
+  // Each monitor has its own overlay; a mode change on one switches them all.
+  const pickMode = (m: Mode) => {
+    setMode(m);
+    setHover(null);
+    emit("snip-mode", m).catch(() => {});
+  };
+
   useEffect(() => {
     snipView().then(setView).catch((e) => setError(String(e)));
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") cancelSnip();
-      if (e.key === "1") setMode("region");
-      if (e.key === "2") setMode("window");
-      if (e.key === "3") setMode("screen");
+      if (e.key === "1") pickMode("region");
+      if (e.key === "2") pickMode("window");
+      if (e.key === "3") pickMode("screen");
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const un = listen<Mode>("snip-mode", ({ payload }) => { setMode(payload); setHover(null); });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      un.then((f) => f());
+    };
   }, []);
 
   // CSS pixels to the screenshot's physical pixels.
@@ -80,7 +92,10 @@ export function Snip() {
   if (!view) return <div className="snip" />;
 
   return (
-    <div className={`snip mode-${mode}`} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}>
+    <div
+      className={`snip mode-${mode}`} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
+      onPointerLeave={() => { setCursor(null); setHover(null); }}
+    >
       <img className="snip-shot" src={view.preview} alt="" draggable={false} />
       {lit ? (
         <div className="snip-lit" style={{ left: lit.x, top: lit.y, width: lit.w, height: lit.h }}>
@@ -103,14 +118,14 @@ export function Snip() {
 
       <div className="snip-bar" role="toolbar" aria-label="擷取模式">
         {([["region", "區域"], ["window", "視窗"], ["screen", "全螢幕"]] as const).map(([m, label], i) => (
-          <button key={m} aria-pressed={mode === m} onClick={() => { setMode(m); setHover(null); }}>
+          <button key={m} aria-pressed={mode === m} onClick={() => pickMode(m)}>
             {label}<kbd>{i + 1}</kbd>
           </button>
         ))}
         <span className="sep" />
         <span className="hint">
           {view.purpose === "live_target" && <strong>選擇要讓 Live 看的範圍 · </strong>}
-          {mode === "region" ? "拖曳框選" : mode === "window" ? "點選一個視窗" : "按一下選取整個螢幕"}
+          {mode === "region" ? "拖曳框選" : mode === "window" ? "點選一個視窗" : "按一下選取這個螢幕"}
         </span>
         <button onClick={() => cancelSnip()}>取消<kbd>Esc</kbd></button>
       </div>

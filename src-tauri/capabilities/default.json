@@ -5,7 +5,7 @@
   "windows": [
     "main",
     "popup",
-    "snip",
+    "snip-*",
     "live"
   ],
   "permissions": [

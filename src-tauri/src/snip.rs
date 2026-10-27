@@ -27,16 +27,23 @@ pub enum Purpose {
     LiveTarget,
 }
 
+/// One monitor's frozen screenshot.
+pub struct Shot {
+    pub monitor_x: i32,
+    pub monitor_y: i32,
+    pub image: RgbaImage,
+    /// Front-most first, clipped to this monitor.
+    pub windows: Vec<WinRect>,
+}
+
+/// A snipping session covers every monitor; each gets its own overlay window ("snip-<index>"),
+/// so per-monitor scaling stays exact.
 pub struct Snip {
     pub purpose: Purpose,
     /// What to do with the selection (for `Purpose::Translate`).
     pub task: contextlens_core::Task,
-    pub monitor_x: i32,
-    pub monitor_y: i32,
-    pub image: RgbaImage,
-    /// Front-most first.
-    pub windows: Vec<WinRect>,
     pub tutor: bool,
+    pub shots: Vec<Shot>,
 }
 
 /// What the overlay needs to draw.
@@ -59,56 +66,69 @@ pub struct Rect {
     pub h: f64,
 }
 
-pub fn take(
-    cursor_x: i32,
-    cursor_y: i32,
-    tutor: bool,
-    task: contextlens_core::Task,
-    purpose: Purpose,
-) -> Result<Snip, String> {
+pub fn take(tutor: bool, task: contextlens_core::Task, purpose: Purpose) -> Result<Snip, String> {
     let err = |e: xcap::XCapError| format!("無法擷取螢幕：{e}");
-    let monitor = Monitor::from_point(cursor_x, cursor_y)
-        .or_else(|_| Monitor::all().map_err(err)?.into_iter().next().ok_or_else(|| "找不到螢幕".to_string()))
-        .map_err(|e| e.to_string())?;
-    let (mx, my) = (monitor.x().map_err(err)?, monitor.y().map_err(err)?);
-    let image = monitor.capture_image().map_err(err)?;
-    let (mw, mh) = (image.width() as i32, image.height() as i32);
-    Ok(Snip { purpose, task, monitor_x: mx, monitor_y: my, windows: windows_on(mx, my, mw, mh), image, tutor })
+    let windows = all_windows();
+    let mut shots = Vec::new();
+    let mut last_error = None;
+    for monitor in Monitor::all().map_err(err)? {
+        let shot = (|| {
+            let (mx, my) = (monitor.x().map_err(err)?, monitor.y().map_err(err)?);
+            let image = monitor.capture_image().map_err(err)?;
+            let (mw, mh) = (image.width() as i32, image.height() as i32);
+            Ok::<_, String>(Shot { monitor_x: mx, monitor_y: my, windows: clip_to(&windows, mx, my, mw, mh), image })
+        })();
+        // One monitor failing (asleep, mirrored) should not cost the others.
+        match shot {
+            Ok(s) => shots.push(s),
+            Err(e) => last_error = Some(e),
+        }
+    }
+    if shots.is_empty() {
+        return Err(last_error.unwrap_or_else(|| "找不到螢幕".into()));
+    }
+    Ok(Snip { purpose, task, tutor, shots })
 }
 
-fn windows_on(mx: i32, my: i32, mw: i32, mh: i32) -> Vec<WinRect> {
+/// Every other app's visible window in screen coordinates, front-most first.
+fn all_windows() -> Vec<(i32, i32, i32, i32, String)> {
     let own = std::process::id();
-    let mut found: Vec<(i32, WinRect)> = Window::all()
+    let mut found: Vec<(i32, (i32, i32, i32, i32, String))> = Window::all()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|w| {
             if w.is_minimized().unwrap_or(true) || w.pid().ok()? == own {
                 return None;
             }
-            let (x, y) = (w.x().ok()? - mx, w.y().ok()? - my);
-            let (ww, wh) = (w.width().ok()? as i32, w.height().ok()? as i32);
-            // Clip to the monitor; skip slivers and windows on other monitors.
-            let (x0, y0) = (x.max(0), y.max(0));
-            let (x1, y1) = ((x + ww).min(mw), (y + wh).min(mh));
-            if x1 - x0 < 40 || y1 - y0 < 40 {
-                return None;
-            }
-            let title = w.title().unwrap_or_default();
-            let z = w.z().unwrap_or(0);
-            Some((z, WinRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, title }))
+            let rect = (w.x().ok()?, w.y().ok()?, w.width().ok()? as i32, w.height().ok()? as i32);
+            Some((w.z().unwrap_or(0), (rect.0, rect.1, rect.2, rect.3, w.title().unwrap_or_default())))
         })
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0));
     found.into_iter().map(|(_, r)| r).collect()
 }
 
-pub fn view(s: &Snip) -> Result<SnipView, String> {
-    let preview = imaging::jpeg_b64(&DynamicImage::ImageRgba8(s.image.clone()), 82)?;
+/// The windows on one monitor, clipped to it, relative to its top-left; slivers dropped.
+fn clip_to(windows: &[(i32, i32, i32, i32, String)], mx: i32, my: i32, mw: i32, mh: i32) -> Vec<WinRect> {
+    windows
+        .iter()
+        .filter_map(|(x, y, w, h, title)| {
+            let (x, y) = (x - mx, y - my);
+            let (x0, y0) = (x.max(0), y.max(0));
+            let (x1, y1) = ((x + w).min(mw), (y + h).min(mh));
+            (x1 - x0 >= 40 && y1 - y0 >= 40).then(|| WinRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, title: title.clone() })
+        })
+        .collect()
+}
+
+pub fn view(s: &Snip, index: usize) -> Result<SnipView, String> {
+    let shot = s.shots.get(index).ok_or("沒有這個螢幕")?;
+    let preview = imaging::jpeg_b64(&DynamicImage::ImageRgba8(shot.image.clone()), 82)?;
     Ok(SnipView {
         preview: format!("data:image/jpeg;base64,{preview}"),
-        width: s.image.width(),
-        height: s.image.height(),
-        windows: s.windows.clone(),
+        width: shot.image.width(),
+        height: shot.image.height(),
+        windows: shot.windows.clone(),
         purpose: s.purpose,
     })
 }
@@ -122,9 +142,9 @@ pub fn clamp(r: Rect, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
     (x1 > x0 + 4 && y1 > y0 + 4).then(|| (x0, y0, x1 - x0, y1 - y0))
 }
 
-pub fn crop(s: &Snip, r: Rect) -> Result<Media, String> {
-    let (x, y, w, h) = clamp(r, s.image.width(), s.image.height()).ok_or("選取範圍太小")?;
-    let part = image::imageops::crop_imm(&s.image, x, y, w, h).to_image();
+pub fn crop(shot: &Shot, r: Rect) -> Result<Media, String> {
+    let (x, y, w, h) = clamp(r, shot.image.width(), shot.image.height()).ok_or("選取範圍太小")?;
+    let part = image::imageops::crop_imm(&shot.image, x, y, w, h).to_image();
     imaging::png_media(&part, "螢幕擷取.png")
 }
 
@@ -138,6 +158,17 @@ mod tests {
         assert_eq!(clamp(r, 1000, 1000), Some((20, 10, 100, 80)));
         let off = Rect { x: -50.0, y: 950.0, w: 200.0, h: 200.0 };
         assert_eq!(clamp(off, 1000, 1000), Some((0, 950, 150, 50)));
+    }
+
+    #[test]
+    fn windows_are_clipped_to_each_monitor() {
+        // Two 1000-wide monitors side by side; one window straddles both.
+        let wins = vec![(900, 100, 300, 200, "straddler".to_string()), (1500, 50, 30, 30, "tiny".to_string())];
+        let left = clip_to(&wins, 0, 0, 1000, 800);
+        assert_eq!((left[0].x, left[0].w), (900, 100));
+        let right = clip_to(&wins, 1000, 0, 1000, 800);
+        assert_eq!(right.len(), 1); // the 30x30 window is a sliver
+        assert_eq!((right[0].x, right[0].w, right[0].title.as_str()), (0, 200, "straddler"));
     }
 
     #[test]
