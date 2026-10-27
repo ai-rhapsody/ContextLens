@@ -42,15 +42,13 @@ Linux 另需 `libxdo-dev`（模擬複製按鍵）。
 
 應用內「更新」頁會檢查 GitHub release 的 `latest.json`，下載、驗簽、安裝後重新啟動。
 
-**第一次發佈前必做**（目前 `tauri.conf.json` 裡的公鑰只是開發用，私鑰已丟棄，不能拿來發佈）：
+**簽章金鑰**：`tauri.conf.json` 裡的公鑰，對應的私鑰是開發時產生的（沒有密碼）。要讓 `release` 工作流程能簽章，必須把私鑰存成 GitHub Secret：
 
-```bash
-npx tauri signer generate -w ~/.tauri/contextlens.key
-```
+1. repo 的 Settings → Secrets and variables → Actions → New repository secret
+2. 名稱 `TAURI_SIGNING_PRIVATE_KEY`，內容是私鑰檔的完整文字（沒有密碼，所以不需要 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）
+3. **另外備份一份私鑰**：Secret 存進去之後無法再讀回來。遺失私鑰，就無法再發佈能被舊版接受的更新，使用者得重新安裝。
+4. 想換成自己的金鑰：`npx tauri signer generate -w ~/.tauri/contextlens.key`，把新公鑰貼到 `plugins.updater.pubkey`，再更新 Secret。換金鑰後，舊版無法自動更新。
 
-1. 把印出的**公鑰**貼到 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`
-2. 在 GitHub repo 的 Settings → Secrets 加入 `TAURI_SIGNING_PRIVATE_KEY`（私鑰檔內容）與 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-3. 私鑰保管好：遺失就無法再發佈能被舊版接受的更新
-4. 發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，然後 `git tag v0.2.0 && git push --tags`，`release` 工作流程會建置四個平台並上傳 `latest.json`
+發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，然後 `git tag v0.2.0 && git push --tags`，`release` 工作流程會建置四個平台並上傳 `latest.json`。只想先試用、不發佈時，到 Actions 手動執行 `build`，不需要任何 Secret。
 
 更新端點是 `https://github.com/dalof41014/contextlens/releases/latest/download/latest.json`，**repo 必須是公開的**，否則已安裝的 app 無法匿名下載。若要保持私有，把 `latest.json` 與安裝檔放在別處（例如 S3、Cloudflare R2）並改 `endpoints`。
