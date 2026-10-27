@@ -4,7 +4,9 @@
 //! text expanders do: remember the clipboard, press Copy, read the result,
 //! and put the old clipboard back.
 
+use crate::imaging;
 use arboard::Clipboard;
+use contextlens_core::Media;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use std::{thread::sleep, time::Duration};
 
@@ -68,4 +70,15 @@ fn send_copy() -> Result<(), String> {
     let release = enigo.key(COPY_MODIFIER, Direction::Release);
     click.map_err(err)?;
     release.map_err(err)
+}
+
+/// The image on the clipboard, e.g. after Win+Shift+S or a screenshot tool.
+pub fn clipboard_image() -> Result<Media, String> {
+    let mut clipboard = Clipboard::new().map_err(|e| format!("無法讀取剪貼簿：{e}"))?;
+    let img = clipboard
+        .get_image()
+        .map_err(|_| "剪貼簿裡沒有圖片。先截圖（Windows：Win+Shift+S）再按熱鍵。".to_string())?;
+    let rgba = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())
+        .ok_or("剪貼簿的圖片格式無法讀取")?;
+    imaging::png_media(&rgba, "剪貼簿圖片.png")
 }

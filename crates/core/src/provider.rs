@@ -1,3 +1,4 @@
+use crate::media::{self, Media};
 use crate::settings::Provider;
 use crate::sse::SseDecoder;
 use futures_util::StreamExt;
@@ -7,6 +8,8 @@ use serde_json::{json, Value};
 pub struct ChatRequest {
     pub system: String,
     pub user: String,
+    /// Images, audio or video sent with the user turn.
+    pub media: Vec<Media>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -21,6 +24,8 @@ pub enum ProviderError {
     },
     #[error("{0}")]
     Stream(String),
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 /// A fully built HTTP request, kept separate from sending so it can be tested.
@@ -41,7 +46,7 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
                 "stream": true,
                 "messages": [
                     { "role": "system", "content": req.system },
-                    { "role": "user", "content": req.user },
+                    { "role": "user", "content": openai_content(req) },
                 ],
             }),
         },
@@ -56,7 +61,7 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
                 "stream": true,
                 "max_tokens": 4096,
                 "system": req.system,
-                "messages": [{ "role": "user", "content": req.user }],
+                "messages": [{ "role": "user", "content": anthropic_content(req) }],
             }),
         },
         Provider::Gemini => HttpPlan {
@@ -66,10 +71,46 @@ pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -
             headers: vec![("x-goog-api-key", api_key.to_string())],
             body: json!({
                 "systemInstruction": { "parts": [{ "text": req.system }] },
-                "contents": [{ "role": "user", "parts": [{ "text": req.user }] }],
+                "contents": [{ "role": "user", "parts": gemini_parts(req) }],
             }),
         },
     }
+}
+
+fn openai_content(req: &ChatRequest) -> Value {
+    if req.media.is_empty() {
+        return json!(req.user);
+    }
+    let mut parts = vec![json!({ "type": "text", "text": req.user })];
+    for m in &req.media {
+        let url = format!("data:{};base64,{}", m.mime, m.data_b64);
+        parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+    }
+    Value::Array(parts)
+}
+
+fn anthropic_content(req: &ChatRequest) -> Value {
+    if req.media.is_empty() {
+        return json!(req.user);
+    }
+    // Anthropic recommends images before the text that refers to them.
+    let mut parts: Vec<Value> = req
+        .media
+        .iter()
+        .map(|m| json!({ "type": "image", "source": { "type": "base64", "media_type": m.mime, "data": m.data_b64 } }))
+        .collect();
+    parts.push(json!({ "type": "text", "text": req.user }));
+    Value::Array(parts)
+}
+
+fn gemini_parts(req: &ChatRequest) -> Value {
+    let mut parts: Vec<Value> = req
+        .media
+        .iter()
+        .map(|m| json!({ "inlineData": { "mimeType": m.mime, "data": m.data_b64 } }))
+        .collect();
+    parts.push(json!({ "text": req.user }));
+    Value::Array(parts)
 }
 
 /// Reads one SSE `data:` payload and returns the text it adds, if any.
@@ -149,6 +190,9 @@ pub async fn stream_completion(
     req: &ChatRequest,
     on_delta: impl FnMut(&str) -> bool,
 ) -> Result<(), ProviderError> {
+    for m in &req.media {
+        media::check(provider, model, m).map_err(ProviderError::Unsupported)?;
+    }
     run_plan(client, provider, plan(provider, model, api_key, req), on_delta).await
 }
 
@@ -193,7 +237,12 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn req() -> ChatRequest {
-        ChatRequest { system: "sys".into(), user: "usr".into() }
+        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![] }
+    }
+
+    fn req_with_image() -> ChatRequest {
+        let media = vec![Media { mime: "image/png".into(), data_b64: "QUJD".into(), name: None }];
+        ChatRequest { media, ..req() }
     }
 
     #[test]
@@ -219,6 +268,39 @@ mod tests {
         assert!(p.url.contains("models/gemini-x:streamGenerateContent?alt=sse"));
         assert!(!p.url.contains("SECRET"));
         assert_eq!(p.headers[0], ("x-goog-api-key", "SECRET".to_string()));
+    }
+
+    #[test]
+    fn text_only_requests_keep_plain_string_content() {
+        assert_eq!(plan(Provider::OpenAi, "m", "K", &req()).body["messages"][1]["content"], "usr");
+        assert_eq!(plan(Provider::Anthropic, "m", "K", &req()).body["messages"][0]["content"], "usr");
+    }
+
+    #[test]
+    fn images_use_each_providers_shape() {
+        let r = req_with_image();
+        let o = plan(Provider::OpenAi, "m", "K", &r).body;
+        assert_eq!(o["messages"][1]["content"][1]["image_url"]["url"], "data:image/png;base64,QUJD");
+
+        let a = plan(Provider::Anthropic, "m", "K", &r).body;
+        let first = &a["messages"][0]["content"][0];
+        assert_eq!(first["type"], "image");
+        assert_eq!(first["source"]["media_type"], "image/png");
+        assert_eq!(a["messages"][0]["content"][1]["text"], "usr");
+
+        let g = plan(Provider::Gemini, "m", "K", &r).body;
+        assert_eq!(g["contents"][0]["parts"][0]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(g["contents"][0]["parts"][1]["text"], "usr");
+    }
+
+    #[tokio::test]
+    async fn unsupported_media_fails_before_any_request() {
+        let mut r = req_with_image();
+        r.media[0].mime = "video/mp4".into();
+        let err = stream_completion(&reqwest::Client::new(), Provider::Anthropic, "m", "K", &r, |_| true)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::Unsupported(_)));
     }
 
     #[test]

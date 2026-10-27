@@ -1,25 +1,31 @@
 mod capture;
+mod imaging;
 mod secrets;
+mod snip;
 mod store;
 
+use contextlens_core::{
+    caps, prompt, Caps, ChatRequest, History, HistoryEntry, Hotkey, Media, Provider, Settings, Source,
+};
 use serde::{Deserialize, Serialize};
-use contextlens_core::{prompt, Action, ChatRequest, Provider, Settings};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
 use tauri::{
     ipc::Channel,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-/// What the hotkey grabbed, waiting for the popup to pick it up.
-#[derive(Clone, Serialize)]
+/// What a hotkey grabbed, waiting for the popup to pick it up.
+#[derive(Clone, Serialize, Default)]
 struct Capture {
     text: String,
+    media: Option<Media>,
     tutor: bool,
     /// Set when capturing failed; the popup shows it instead of translating.
     error: Option<String>,
@@ -28,8 +34,12 @@ struct Capture {
 struct AppState {
     settings: Mutex<Settings>,
     pending: Mutex<Option<Capture>>,
+    snip: Mutex<Option<snip::Snip>>,
+    history: Mutex<History>,
     /// Bumped for every translation; an older stream stops when it sees a newer number.
     generation: AtomicU64,
+    /// A pinned popup stays where the user put it instead of jumping to the cursor.
+    popup_pinned: AtomicBool,
     http: contextlens_core::reqwest::Client,
 }
 
@@ -41,7 +51,7 @@ enum StreamEvent {
     Error { message: String },
 }
 
-// ---------- popup ----------
+// ---------- windows ----------
 
 fn popup(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("popup")
@@ -50,10 +60,26 @@ fn popup(app: &AppHandle) -> Option<WebviewWindow> {
 fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
     let Ok(cursor) = app.cursor_position() else { return };
     let (mut x, mut y) = (cursor.x + 16.0, cursor.y + 16.0);
-    if let (Ok(Some(mon)), Ok(size)) = (app.monitor_from_point(cursor.x, cursor.y), win.outer_size()) {
+    // Fall back to the window's or the primary monitor when the point lookup finds none.
+    let monitor = app
+        .monitor_from_point(cursor.x, cursor.y)
+        .ok()
+        .flatten()
+        .or_else(|| win.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Some(mon) = monitor {
+        // A window that has never been shown can report no size yet; use its configured size.
+        let scale = mon.scale_factor();
+        let (w, h) = match win.outer_size() {
+            Ok(s) if s.width > 50 && s.height > 50 => (s.width as f64, s.height as f64),
+            _ => {
+                let [lw, lh] = app.state::<AppState>().settings.lock().unwrap().popup_size.unwrap_or([440, 420]);
+                (lw as f64 * scale, lh as f64 * scale)
+            }
+        };
         let (mp, ms) = (mon.position(), mon.size());
-        let max_x = mp.x as f64 + ms.width as f64 - size.width as f64 - 8.0;
-        let max_y = mp.y as f64 + ms.height as f64 - size.height as f64 - 8.0;
+        let max_x = mp.x as f64 + ms.width as f64 - w - 8.0;
+        let max_y = mp.y as f64 + ms.height as f64 - h - 8.0;
         x = x.min(max_x).max(mp.x as f64 + 8.0);
         y = y.min(max_y).max(mp.y as f64 + 8.0);
     }
@@ -62,12 +88,29 @@ fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
 
 fn show_popup(app: &AppHandle, capture: Capture) {
     let Some(win) = popup(app) else { return };
-    *app.state::<AppState>().pending.lock().unwrap() = Some(capture);
-    place_near_cursor(app, &win);
+    let state = app.state::<AppState>();
+    *state.pending.lock().unwrap() = Some(capture);
+    let stay = state.popup_pinned.load(Ordering::SeqCst) && win.is_visible().unwrap_or(false);
+    if !stay {
+        place_near_cursor(app, &win);
+    }
     let _ = win.show();
     let _ = win.set_focus();
     // The popup also calls take_pending_capture on mount, so a first show cannot be missed.
     let _ = app.emit_to("popup", "capture", ());
+}
+
+fn remember_popup_size(app: &AppHandle) {
+    let Some(win) = popup(app) else { return };
+    let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) else { return };
+    let logical = size.to_logical::<f64>(scale);
+    let new = Some([logical.width.round() as u32, logical.height.round() as u32]);
+    let state = app.state::<AppState>();
+    let mut s = state.settings.lock().unwrap();
+    if s.popup_size != new {
+        s.popup_size = new;
+        let _ = store::save(app, &s);
+    }
 }
 
 fn open_settings(app: &AppHandle) {
@@ -78,16 +121,42 @@ fn open_settings(app: &AppHandle) {
     }
 }
 
+fn close_snip_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("snip") {
+        let _ = w.destroy();
+    }
+}
+
+fn open_snip_window(app: &AppHandle, s: &snip::Snip) -> Result<(), String> {
+    close_snip_window(app);
+    let win = WebviewWindowBuilder::new(app, "snip", WebviewUrl::App("index.html".into()))
+        .title("ContextLens 擷取")
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    // Physical units, so the overlay covers the captured monitor pixel for pixel.
+    let _ = win.set_position(PhysicalPosition::new(s.monitor_x, s.monitor_y));
+    let _ = win.set_size(PhysicalSize::new(s.image.width(), s.image.height()));
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
 // ---------- hotkeys ----------
 
 fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let gs = app.global_shortcut();
     gs.unregister_all().map_err(|e| e.to_string())?;
     for hk in &settings.hotkeys {
-        let action = hk.action;
+        let hotkey = hk.clone();
         gs.on_shortcut(hk.accelerator.as_str(), move |app, _, event| {
             if event.state == ShortcutState::Pressed {
-                trigger(app.clone(), action);
+                trigger(app.clone(), hotkey.clone());
             }
         })
         .map_err(|e| format!("無法註冊熱鍵 {}：{e}", hk.accelerator))?;
@@ -95,34 +164,49 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Result<(), String> 
     Ok(())
 }
 
-fn trigger(app: AppHandle, action: Action) {
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+fn trigger(app: AppHandle, hotkey: Hotkey) {
     tauri::async_runtime::spawn(async move {
-        // Let the user's fingers leave the hotkey before we press Copy.
-        tokio_sleep(150).await;
-        let tutor = match action {
-            Action::TutorSelection => true,
-            Action::TranslateSelection => app.state::<AppState>().settings.lock().unwrap().tutor_mode,
-        };
-        let grabbed = tauri::async_runtime::spawn_blocking(capture::selected_text)
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r);
-        let capture = match grabbed {
-            Ok(text) => Capture { text, tutor, error: None },
-            Err(message) => Capture { text: String::new(), tutor, error: Some(message) },
-        };
-        show_popup(&app, capture);
+        let tutor = hotkey.tutor;
+        let failed = |message: String| Capture { tutor, error: Some(message), ..Default::default() };
+        match hotkey.source {
+            Source::Selection => {
+                // Let the user's fingers leave the hotkey before we press Copy.
+                let _ = blocking(|| Ok(std::thread::sleep(std::time::Duration::from_millis(150)))).await;
+                let capture = match blocking(capture::selected_text).await {
+                    Ok(text) => Capture { text, tutor, ..Default::default() },
+                    Err(e) => failed(e),
+                };
+                show_popup(&app, capture);
+            }
+            Source::ClipboardImage => {
+                let capture = match blocking(capture::clipboard_image).await {
+                    Ok(media) => Capture { media: Some(media), tutor, ..Default::default() },
+                    Err(e) => failed(e),
+                };
+                show_popup(&app, capture);
+            }
+            Source::Screen => {
+                let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
+                match blocking(move || snip::take(x, y, tutor)).await {
+                    Ok(s) => {
+                        let opened = open_snip_window(&app, &s);
+                        *app.state::<AppState>().snip.lock().unwrap() = Some(s);
+                        if let Err(e) = opened {
+                            show_popup(&app, failed(e));
+                        }
+                    }
+                    Err(e) => show_popup(&app, failed(e)),
+                }
+            }
+        }
     });
 }
 
-async fn tokio_sleep(ms: u64) {
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        std::thread::sleep(std::time::Duration::from_millis(ms))
-    })
-    .await;
-}
-
-// ---------- commands ----------
+// ---------- commands: settings and keys ----------
 
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Settings {
@@ -130,8 +214,10 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
+fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<(), String> {
     settings.validate()?;
+    // The popup size is owned by the window, not the settings page.
+    settings.popup_size = state.settings.lock().unwrap().popup_size;
     // Register first: if a hotkey is taken by another app, nothing is saved.
     if let Err(e) = register_hotkeys(&app, &settings) {
         let old = state.settings.lock().unwrap().clone();
@@ -168,6 +254,29 @@ async fn key_status() -> Vec<(Provider, bool)> {
     Provider::ALL.iter().map(|p| (*p, secrets::get(*p).is_some())).collect()
 }
 
+#[derive(Serialize)]
+struct ProviderInfo {
+    provider: Provider,
+    model: String,
+    caps: Caps,
+    has_key: bool,
+}
+
+/// Each provider with its configured model, what that model takes, and whether a key is stored.
+#[tauri::command]
+async fn provider_info(state: State<'_, AppState>) -> Result<Vec<ProviderInfo>, String> {
+    let settings = state.settings.lock().unwrap().clone();
+    Ok(Provider::ALL
+        .iter()
+        .map(|&p| {
+            let model = settings.model_for(p).to_string();
+            ProviderInfo { provider: p, caps: caps::for_model(p, &model), has_key: secrets::get(p).is_some(), model }
+        })
+        .collect())
+}
+
+// ---------- commands: popup ----------
+
 #[tauri::command]
 fn take_pending_capture(state: State<AppState>) -> Option<Capture> {
     state.pending.lock().unwrap().take()
@@ -175,14 +284,56 @@ fn take_pending_capture(state: State<AppState>) -> Option<Capture> {
 
 #[tauri::command]
 fn hide_popup(app: AppHandle) {
+    remember_popup_size(&app);
     if let Some(w) = popup(&app) {
         let _ = w.hide();
     }
 }
 
 #[tauri::command]
+fn set_popup_pinned(state: State<AppState>, pinned: bool) {
+    state.popup_pinned.store(pinned, Ordering::SeqCst);
+}
+
+#[tauri::command]
 fn show_settings(app: AppHandle) {
     open_settings(&app);
+}
+
+// ---------- commands: snipping overlay ----------
+
+#[tauri::command]
+fn snip_view(state: State<AppState>) -> Result<snip::SnipView, String> {
+    let guard = state.snip.lock().unwrap();
+    snip::view(guard.as_ref().ok_or("沒有進行中的擷取")?)
+}
+
+#[tauri::command]
+async fn finish_snip(app: AppHandle, rect: snip::Rect) -> Result<(), String> {
+    let s = app.state::<AppState>().snip.lock().unwrap().take().ok_or("沒有進行中的擷取")?;
+    close_snip_window(&app);
+    let tutor = s.tutor;
+    let capture = match blocking(move || snip::crop(&s, rect)).await {
+        Ok(media) => Capture { media: Some(media), tutor, ..Default::default() },
+        Err(e) => Capture { tutor, error: Some(e), ..Default::default() },
+    };
+    show_popup(&app, capture);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_snip(app: AppHandle, state: State<AppState>) {
+    state.snip.lock().unwrap().take();
+    close_snip_window(&app);
+}
+
+// ---------- commands: translation ----------
+
+#[derive(Deserialize)]
+struct Input {
+    #[serde(default)]
+    text: String,
+    media: Option<Media>,
 }
 
 /// Streams one completion with the stored key. Stops quietly when `gen` is no longer
@@ -195,8 +346,9 @@ async fn stream(
     gen: Option<u64>,
     mut emit: impl FnMut(&str) -> bool,
 ) -> Result<(), String> {
-    let key = secrets::get(provider)
-        .ok_or_else(|| format!("還沒設定 {} 的 API 金鑰。到「模型與金鑰」貼上金鑰。", provider.id()))?;
+    let key = secrets::get(provider).ok_or_else(|| {
+        format!("還沒設定 {} 的 API 金鑰。到「模型與金鑰」貼上金鑰。", provider.display_name())
+    })?;
     contextlens_core::stream_completion(&state.http, provider, model, &key, req, |t| {
         gen.map_or(true, |g| state.generation.load(Ordering::SeqCst) == g) && emit(t)
     })
@@ -204,28 +356,70 @@ async fn stream(
     .map_err(|e| e.to_string())
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 #[tauri::command]
 async fn run_translation(
+    app: AppHandle,
     state: State<'_, AppState>,
-    text: String,
+    input: Input,
     tutor: bool,
+    // Use another provider for this request only, e.g. when the default cannot read video.
+    provider: Option<Provider>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     let gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    let (provider, model, lang) = {
+    let (provider, model, lang, keep) = {
         let s = state.settings.lock().unwrap();
-        (s.provider, s.model_for(s.provider).to_string(), s.target_language.clone())
+        let p = provider.unwrap_or(s.provider);
+        (p, s.model_for(p).to_string(), s.target_language.clone(), s.save_history)
     };
     let mode = if tutor { prompt::Mode::Tutor } else { prompt::Mode::Translate };
-    let req = prompt::build(mode, &text, &lang);
+    let media = match input.media {
+        Some(m) => Some(blocking(move || Ok(imaging::prepare(provider, m))).await?),
+        None => None,
+    };
+    let req = prompt::build(mode, &input.text, media, &lang);
 
+    let mut full = String::new();
     let result = stream(&state, provider, &model, &req, Some(gen), |t| {
+        full.push_str(t);
         on_event.send(StreamEvent::Delta { text: t.to_string() }).is_ok()
     })
     .await;
-    // A newer request owns the popup now; stay silent.
+    // A newer request owns the popup now; stay silent and keep nothing.
     if state.generation.load(Ordering::SeqCst) != gen {
         return Ok(());
+    }
+    if result.is_ok() && keep && !full.trim().is_empty() {
+        let m = req.media.first();
+        let entry = HistoryEntry {
+            at_ms: now_ms(),
+            kind: m.and_then(|m| m.kind()).map_or("text", |k| match k {
+                contextlens_core::MediaKind::Image => "image",
+                contextlens_core::MediaKind::Audio => "audio",
+                contextlens_core::MediaKind::Video => "video",
+            })
+            .into(),
+            source: match m {
+                Some(m) => m.name.clone().unwrap_or_else(|| m.kind().map_or("檔案", |k| k.label()).into()),
+                None => input.text.trim().chars().take(4000).collect(),
+            },
+            thumb: m.and_then(imaging::thumbnail),
+            result: full,
+            tutor,
+            provider,
+            model,
+        };
+        let mut h = state.history.lock().unwrap();
+        h.push(entry);
+        let _ = store::save_history(&app, &h);
+        drop(h);
+        let _ = app.emit_to("main", "history-changed", ());
     }
     let _ = on_event.send(match result {
         Ok(()) => StreamEvent::Done,
@@ -238,9 +432,32 @@ async fn run_translation(
 #[tauri::command]
 async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<String, String> {
     let model = state.settings.lock().unwrap().model_for(args.provider).to_string();
-    let req = ChatRequest { system: "Reply with the single word OK.".into(), user: "ping".into() };
+    let req = ChatRequest { system: "Reply with the single word OK.".into(), user: "ping".into(), media: vec![] };
     stream(&state, args.provider, &model, &req, None, |_| true).await?;
     Ok(model)
+}
+
+// ---------- commands: history ----------
+
+#[tauri::command]
+fn history_list(state: State<AppState>, query: String) -> Vec<HistoryEntry> {
+    state.history.lock().unwrap().search(&query, 300)
+}
+
+#[tauri::command]
+fn history_delete(app: AppHandle, state: State<AppState>, at_ms: u64) -> Result<(), String> {
+    let mut h = state.history.lock().unwrap();
+    if h.remove(at_ms) {
+        store::save_history(&app, &h)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn history_clear(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let mut h = state.history.lock().unwrap();
+    h.clear();
+    store::save_history(&app, &h)
 }
 
 // ---------- app ----------
@@ -258,11 +475,19 @@ pub fn run() {
             set_api_key,
             delete_api_key,
             key_status,
+            provider_info,
             take_pending_capture,
             hide_popup,
+            set_popup_pinned,
             show_settings,
+            snip_view,
+            finish_snip,
+            cancel_snip,
             run_translation,
             test_provider,
+            history_list,
+            history_delete,
+            history_clear,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -270,7 +495,10 @@ pub fn run() {
             app.manage(AppState {
                 settings: Mutex::new(settings.clone()),
                 pending: Mutex::new(None),
+                snip: Mutex::new(None),
+                history: Mutex::new(store::load_history(&handle)),
                 generation: AtomicU64::new(0),
+                popup_pinned: AtomicBool::new(false),
                 http: contextlens_core::http_client(),
             });
             if let Err(e) = register_hotkeys(&handle, &settings) {
@@ -282,10 +510,14 @@ pub fn run() {
             for cfg in app.config().app.windows.clone() {
                 tauri::WebviewWindowBuilder::from_config(&handle, &cfg)?.build()?;
             }
+            if let (Some([w, h]), Some(win)) = (settings.popup_size, popup(&handle)) {
+                let _ = win.set_size(LogicalSize::new(w as f64, h as f64));
+            }
 
             let menu = Menu::with_items(
                 app,
                 &[
+                    &MenuItem::with_id(app, "translator", "開啟翻譯視窗", true, None::<&str>)?,
                     &MenuItem::with_id(app, "settings", "設定", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "結束 ContextLens", true, None::<&str>)?,
                 ],
@@ -296,6 +528,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id.as_ref() {
+                    "translator" => show_popup(app, Capture::default()),
                     "settings" => open_settings(app),
                     "quit" => app.exit(0),
                     _ => {}
@@ -314,9 +547,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the settings window keeps ContextLens alive in the tray so hotkeys still work.
+            // Closing a window keeps ContextLens alive in the tray so hotkeys still work.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                if window.label() == "popup" {
+                    remember_popup_size(window.app_handle());
+                }
                 let _ = window.hide();
             }
         })

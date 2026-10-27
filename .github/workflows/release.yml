@@ -5,6 +5,12 @@
 name: release
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Which installers to build"
+        type: choice
+        options: [windows, all]
+        default: windows
   push:
     tags: ["v*"]
 
@@ -15,11 +21,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: macos-latest, args: "--target aarch64-apple-darwin" }
-          - { os: macos-latest, args: "--target x86_64-apple-darwin" }
-          - { os: ubuntu-22.04, args: "" }
-          - { os: windows-latest, args: "" }
+        # Run workflow defaults to Windows only (fast); a pushed tag or "all" builds every platform.
+        include: ${{ fromJSON(inputs.platforms == 'windows' && '[{"os":"windows-latest","args":""}]' || '[{"os":"macos-latest","args":"--target aarch64-apple-darwin"},{"os":"macos-latest","args":"--target x86_64-apple-darwin"},{"os":"ubuntu-22.04","args":""},{"os":"windows-latest","args":""}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +37,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libdbus-1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev
+            libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev \
+            libpipewire-0.3-dev libclang-dev clang libxcb1-dev libxrandr-dev libgbm-dev libegl-dev
       - run: npm ci
       - uses: tauri-apps/tauri-action@v0
         env:

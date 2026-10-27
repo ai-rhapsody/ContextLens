@@ -1,37 +1,65 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Provider = "gemini" | "openai" | "anthropic";
-export type ActionId = "translate_selection" | "tutor_selection";
+export type Source = "selection" | "screen" | "clipboard_image";
 
 export interface Hotkey {
   id: string;
   accelerator: string;
-  action: ActionId;
+  source: Source;
+  tutor: boolean;
 }
 
 export interface Settings {
   target_language: string;
   provider: Provider;
   models: Record<Provider, string>;
-  tutor_mode: boolean;
   hotkeys: Hotkey[];
+  save_history: boolean;
+  popup_size: [number, number] | null;
+}
+
+export interface Media {
+  mime: string;
+  data_b64: string;
+  name?: string | null;
 }
 
 export interface Capture {
   text: string;
+  media: Media | null;
   tutor: boolean;
   error: string | null;
 }
+
+export interface HistoryEntry {
+  at_ms: number;
+  kind: "text" | "image" | "audio" | "video";
+  source: string;
+  thumb: string | null;
+  result: string;
+  tutor: boolean;
+  provider: Provider;
+  model: string;
+}
+
+export interface WinRect { x: number; y: number; w: number; h: number; title: string }
+export interface SnipView { preview: string; width: number; height: number; windows: WinRect[] }
+export interface Rect { x: number; y: number; w: number; h: number }
+
+export interface Caps { image: boolean; audio: boolean; video: boolean; live: boolean }
+export interface ProviderInfo { provider: Provider; model: string; caps: Caps; has_key: boolean }
+export const providerInfo = () => invoke<ProviderInfo[]>("provider_info");
 
 export type StreamEvent =
   | { kind: "delta"; text: string }
   | { kind: "done" }
   | { kind: "error"; message: string };
 
-export const PROVIDERS: { id: Provider; name: string; vendor: string }[] = [
-  { id: "gemini", name: "Gemini", vendor: "Google" },
-  { id: "openai", name: "ChatGPT", vendor: "OpenAI" },
-  { id: "anthropic", name: "Claude", vendor: "Anthropic" },
+export const PROVIDERS: { id: Provider; name: string; vendor: string; media: string }[] = [
+  { id: "gemini", name: "Gemini", vendor: "Google", media: "文字、圖片、音訊、影片" },
+  { id: "openai", name: "ChatGPT", vendor: "OpenAI", media: "文字、圖片" },
+  { id: "anthropic", name: "Claude", vendor: "Anthropic", media: "文字、圖片" },
 ];
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -42,7 +70,14 @@ export const deleteApiKey = (provider: Provider) => invoke<void>("delete_api_key
 export const testProvider = (provider: Provider) => invoke<string>("test_provider", { args: { provider } });
 export const takePendingCapture = () => invoke<Capture | null>("take_pending_capture");
 export const hidePopup = () => invoke<void>("hide_popup");
+export const setPopupPinned = (pinned: boolean) => invoke<void>("set_popup_pinned", { pinned });
 export const showSettings = () => invoke<void>("show_settings");
+export const snipView = () => invoke<SnipView>("snip_view");
+export const finishSnip = (rect: Rect) => invoke<void>("finish_snip", { rect });
+export const cancelSnip = () => invoke<void>("cancel_snip");
+export const historyList = (query: string) => invoke<HistoryEntry[]>("history_list", { query });
+export const historyDelete = (atMs: number) => invoke<void>("history_delete", { atMs });
+export const historyClear = () => invoke<void>("history_clear");
 
 export async function keyStatus(): Promise<Record<Provider, boolean>> {
   const rows = await invoke<[Provider, boolean][]>("key_status");
@@ -50,8 +85,15 @@ export async function keyStatus(): Promise<Record<Provider, boolean>> {
 }
 
 /** Starts a streaming translation. Events from a superseded run must be ignored by the caller. */
-export function runTranslation(text: string, tutor: boolean, onEvent: (e: StreamEvent) => void) {
+export function runTranslation(
+  input: { text: string; media: Media | null },
+  tutor: boolean,
+  onEvent: (e: StreamEvent) => void,
+  provider: Provider | null = null,
+) {
   const channel = new Channel<StreamEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>("run_translation", { text, tutor, onEvent: channel });
+  return invoke<void>("run_translation", { input, tutor, provider, onEvent: channel });
 }
+
+export const dataUrl = (m: Media) => `data:${m.mime};base64,${m.data_b64}`;

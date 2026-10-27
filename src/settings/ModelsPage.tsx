@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import {
-  deleteApiKey, keyStatus, PROVIDERS, setApiKey, testProvider, type Provider, type Settings,
+  deleteApiKey, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider, type Settings,
 } from "../lib/api";
+import { CapsRow } from "./Caps";
 import { TextField } from "./TextField";
 
 type Note = { kind: "ok" | "err"; text: string } | null;
 
 function ProviderRow(props: {
-  id: Provider; name: string; vendor: string; settings: Settings; hasKey: boolean;
+  id: Provider; name: string; vendor: string; settings: Settings; hasKey: boolean; caps?: Caps;
   commit: (s: Settings) => void; refresh: () => void;
 }) {
   const { id, settings, hasKey } = props;
@@ -43,6 +44,10 @@ function ProviderRow(props: {
         />
       </div>
       <div className="provider-line">
+        <span className="muted" style={{ width: 40 }}>能力</span>
+        <CapsRow caps={props.caps} />
+      </div>
+      <div className="provider-line">
         <span className="muted" style={{ width: 40 }}>金鑰</span>
         <input
           className="field" type="password" value={key} autoComplete="off" spellCheck={false}
@@ -76,17 +81,26 @@ function ProviderRow(props: {
 }
 
 export function ModelsPage({ settings, commit }: { settings: Settings; commit: (s: Settings) => void }) {
-  const [keys, setKeys] = useState<Record<Provider, boolean> | null>(null);
-  const refresh = () => { keyStatus().then(setKeys); };
-  useEffect(refresh, []);
+  const [info, setInfo] = useState<Record<Provider, { has_key: boolean; caps: Caps }> | null>(null);
+  const refresh = () => {
+    providerInfo().then((rows) => setInfo(Object.fromEntries(rows.map((r) => [r.provider, r])) as never));
+  };
+  // Model names change what a model can read, so recheck whenever settings change.
+  useEffect(refresh, [settings]);
 
   return (
     <>
       <h1>模型與金鑰</h1>
-      <p className="lede">選一個服務，貼上你自己的 API 金鑰。金鑰存在系統鑰匙圈，不會寫進設定檔，也不會送到畫面上。</p>
+      <p className="lede">
+        選一個預設服務，貼上你自己的 API 金鑰。金鑰存在系統鑰匙圈，不會寫進設定檔。
+        「能力」依模型名稱判斷；預設服務讀不了的內容，翻譯視窗會讓你改用其他有金鑰的服務。
+      </p>
       <div className="panel">
         {PROVIDERS.map((p) => (
-          <ProviderRow key={p.id} {...p} settings={settings} hasKey={keys?.[p.id] ?? false} commit={commit} refresh={refresh} />
+          <ProviderRow
+            key={p.id} {...p} settings={settings} hasKey={info?.[p.id]?.has_key ?? false} caps={info?.[p.id]?.caps}
+            commit={commit} refresh={refresh}
+          />
         ))}
       </div>
     </>

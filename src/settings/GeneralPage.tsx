@@ -7,7 +7,7 @@ export function GeneralPage({ settings, commit }: { settings: Settings; commit: 
   return (
     <>
       <h1>一般</h1>
-      <p className="lede">翻譯會寫成你的語言。教學模式會多解釋句子結構、用法和背景知識。</p>
+      <p className="lede">要不要附上教學說明，由每個熱鍵自己決定，在翻譯視窗裡也能隨時切換。</p>
       <div className="panel">
         <div className="row">
           <div className="grow">
@@ -24,17 +24,12 @@ export function GeneralPage({ settings, commit }: { settings: Settings; commit: 
         </div>
         <div className="row">
           <div className="grow">
-            <div className="label">教學模式</div>
-            <div className="hint">
-              除了翻譯，也說明這段文字的結構、用法和延伸知識。翻譯熱鍵會依這個開關決定；「翻譯並教學」熱鍵不受影響。
-            </div>
+            <div className="label">保存歷史紀錄</div>
+            <div className="hint">翻譯完成後存在這台電腦上，可以在「歷史紀錄」搜尋。關閉後不再新增，舊紀錄保留。</div>
           </div>
           <button
-            className="switch"
-            role="switch"
-            aria-checked={settings.tutor_mode}
-            aria-label="教學模式"
-            onClick={() => commit({ ...settings, tutor_mode: !settings.tutor_mode })}
+            className="switch" role="switch" aria-checked={settings.save_history} aria-label="保存歷史紀錄"
+            onClick={() => commit({ ...settings, save_history: !settings.save_history })}
           />
         </div>
       </div>

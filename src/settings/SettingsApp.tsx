@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getSettings, saveSettings, type Settings } from "../lib/api";
 import { checkForUpdate, type UpdateState } from "../lib/updater";
 import { GeneralPage } from "./GeneralPage";
+import { HistoryPage } from "./HistoryPage";
 import { HotkeysPage } from "./HotkeysPage";
 import { ModelsPage } from "./ModelsPage";
 import { UpdatesPage } from "./UpdatesPage";
@@ -10,6 +11,7 @@ const PAGES = [
   { id: "general", label: "一般" },
   { id: "models", label: "模型與金鑰" },
   { id: "hotkeys", label: "熱鍵" },
+  { id: "history", label: "歷史紀錄" },
   { id: "updates", label: "更新" },
 ] as const;
 type PageId = (typeof PAGES)[number]["id"];
@@ -71,6 +73,7 @@ export function SettingsApp() {
           {page === "general" && <GeneralPage settings={settings} commit={commit} />}
           {page === "models" && <ModelsPage settings={settings} commit={commit} />}
           {page === "hotkeys" && <HotkeysPage settings={settings} commit={commit} />}
+          {page === "history" && <HistoryPage settings={settings} onOpenGeneral={() => setPage("general")} />}
           {page === "updates" && <UpdatesPage state={update} setState={setUpdate} />}
           <div className={`status-line ${status?.kind ?? ""}`} role="status">{status?.text}</div>
         </div>

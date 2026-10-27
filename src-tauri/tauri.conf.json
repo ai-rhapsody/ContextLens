@@ -12,7 +12,7 @@
   "app": {
     "withGlobalTauri": false,
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost"
     },
     "windows": [
       {
@@ -32,14 +32,16 @@
         "url": "index.html",
         "width": 440,
         "height": 420,
-        "minWidth": 320,
-        "minHeight": 200,
+        "minWidth": 340,
+        "minHeight": 220,
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
         "focus": false,
-        "create": false
+        "create": false,
+        "dragDropEnabled": false,
+        "resizable": true
       }
     ]
   },

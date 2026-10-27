@@ -2,16 +2,28 @@
 
 跨平台桌面應用（Tauri 2 + React）。反白文字、按熱鍵，在游標旁彈出視窗即時顯示翻譯；開啟教學模式還會說明句子結構、用法與延伸知識。用你自己的 Gemini、ChatGPT 或 Claude API 金鑰。
 
-## 功能（MVP）
+## 功能
 
-- 可自訂、可新增的全域熱鍵，每個熱鍵綁一個動作（翻譯 / 翻譯並教學）
-- 翻譯視窗在游標旁串流顯示，Esc 關閉，可固定
-- 教學模式：**翻譯 → 結構 → 用法 → 延伸知識**
-- Gemini、OpenAI、Anthropic 三選一，模型名稱可自訂
-- API 金鑰存在系統鑰匙圈（macOS Keychain、Windows Credential Manager、Linux Secret Service）
-- 介面語言與譯文語言預設繁體中文
+- **熱鍵**：可新增多組，每組選擇來源與是否附上教學說明
+  - 選取的文字：反白後按熱鍵
+  - 螢幕擷取：畫面凍結後選擇區域、視窗或全螢幕（按 1、2、3 切換）
+  - 剪貼簿圖片：搭配 Windows 的 `Win+Shift+S`
+- **翻譯視窗**：在游標旁串流顯示；剛跳出時點外面就關，一旦操作過就保留；右下角可調整大小並記住；「固定」讓新結果在原處更新
+- **圖片、音訊、影片**：拖放、選檔或 `Ctrl+V` 貼上，辨識原文並翻譯
+- **教學模式**：翻譯 → 結構 → 用法 → 延伸知識（媒體會先列出原文）
+- **思考中動畫**：第一個字出現前顯示隨機流動的漸層骨架
+- **模型能力對照**：依服務商與模型名稱判斷能讀取的內容；預設模型讀不了時，一鍵改用其他有金鑰的服務
+- **歷史紀錄**：存在本機，可搜尋、刪除，可關閉
+- Gemini、OpenAI、Anthropic，金鑰存在系統鑰匙圈
 - 應用內線上更新（簽章驗證）
-- 圖片、影片片段擷取：規劃中，見 [docs/ROADMAP.md](docs/ROADMAP.md)
+
+| 服務 | 文字 | 圖片 | 音訊 | 影片 |
+| --- | --- | --- | --- | --- |
+| Gemini | ✓ | ✓ | ✓ | ✓ |
+| ChatGPT（OpenAI） | ✓ | ✓ | | |
+| Claude（Anthropic） | ✓ | ✓ | | |
+
+實際能力依模型名稱判斷，規則在 `crates/core/src/caps.rs`。
 
 ## 開發
 
@@ -49,6 +61,6 @@ Linux 另需 `libxdo-dev`（模擬複製按鍵）。
 3. **另外備份一份私鑰**：Secret 存進去之後無法再讀回來。遺失私鑰，就無法再發佈能被舊版接受的更新，使用者得重新安裝。
 4. 想換成自己的金鑰：`npx tauri signer generate -w ~/.tauri/contextlens.key`，把新公鑰貼到 `plugins.updater.pubkey`，再更新 Secret。換金鑰後，舊版無法自動更新。
 
-發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，然後 `git tag v0.2.0 && git push --tags`，`release` 工作流程會建置四個平台並上傳 `latest.json`。只想先試用、不發佈時，到 Actions 手動執行 `build`，不需要任何 Secret。
+發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，到 Actions → `release` → Run workflow（預設只建 Windows，選 `all` 建全部平台）。tag `v<版本>` 會自動建立。推 tag 也會觸發，並建置全部平台。只想先試用、不發佈時，執行 `build`，不需要任何 Secret。
 
 更新端點是 `https://github.com/dalof41014/contextlens/releases/latest/download/latest.json`，**repo 必須是公開的**，否則已安裝的 app 無法匿名下載。若要保持私有，把 `latest.json` 與安裝檔放在別處（例如 S3、Cloudflare R2）並改 `endpoints`。
