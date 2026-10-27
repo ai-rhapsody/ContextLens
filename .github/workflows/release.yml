@@ -15,8 +15,8 @@ on:
       platforms:
         description: "Which installers to build"
         type: choice
-        options: [windows, all]
-        default: windows
+        options: [all, windows]
+        default: all
   push:
     tags: ["v*"]
 
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Run workflow defaults to Windows only (fast); a pushed tag or "all" builds every platform.
+        # Every platform by default; "windows" alone is faster for a Windows-only fix.
         include: ${{ fromJSON(inputs.platforms == 'windows' && '[{"os":"windows-latest","args":"--bundles nsis"}]' || '[{"os":"macos-latest","args":"--target aarch64-apple-darwin"},{"os":"macos-latest","args":"--target x86_64-apple-darwin"},{"os":"ubuntu-22.04","args":""},{"os":"windows-latest","args":"--bundles nsis"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
@@ -86,7 +86,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "ContextLens v__VERSION__"
-          releaseBody: "Windows: download the .exe (or .msi). macOS: the .dmg. Linux: the .AppImage (auto-updates), .deb or .rpm."
+          releaseBody: "Windows: the -setup.exe. macOS: the .dmg (aarch64 = Apple Silicon, x64 = Intel). Linux: the .AppImage (auto-updates), .deb or .rpm."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

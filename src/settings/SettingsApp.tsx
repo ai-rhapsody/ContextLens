@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getSettings, saveSettings, type Settings } from "../lib/api";
 import { checkForUpdate, type UpdateState } from "../lib/updater";
 import { GeneralPage } from "./GeneralPage";
@@ -25,6 +26,9 @@ export function SettingsApp() {
   const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     getSettings().then(setSettings).catch((e) => setLoadError(String(e)));
+    // Changed elsewhere, e.g. the Live service picked in the caption bar.
+    const un = listen("settings-changed", () => { getSettings().then(setSettings).catch(() => {}); });
+    return () => { un.then((f) => f()); };
   }, []);
 
   // Quiet check at start: failures (offline, unsigned dev build) stay silent.

@@ -344,3 +344,8 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; margin: 28px 0 4px; }
 .hk-live { min-height: 0; padding-top: 0; margin-top: -6px; }
 .hk .row + .row.hk-live { border-top: 0; }
+.warn { color: var(--pill-warning-ink); }
+.soon.wayland { color: var(--text); user-select: text; }
+.soon.wayland p { margin: 0 0 6px; }
+.soon.wayland ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.soon.wayland code { font-size: 12px; }

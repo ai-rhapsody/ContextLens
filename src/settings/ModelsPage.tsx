@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  deleteApiKey, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider, type Settings,
+  deleteApiKey, liveSetProvider, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider,
+  type ProviderInfo, type Settings,
 } from "../lib/api";
 import { LIVE_PRESETS, MODEL_PRESETS } from "../lib/models";
 import { CapsRow } from "./Caps";
@@ -102,10 +103,78 @@ function ProviderRow(props: {
   );
 }
 
+const nameOf = (p: Provider) => PROVIDERS.find((x) => x.id === p)?.name ?? p;
+
+/** What Live will use, mirroring the backend: the chosen service, else the default, then the others. */
+function liveResolution(settings: Settings, rows: ProviderInfo[]) {
+  const by = (p: Provider) => rows.find((r) => r.provider === p);
+  const order = settings.live_provider
+    ? [settings.live_provider]
+    : [settings.provider, ...PROVIDERS.map((p) => p.id).filter((p) => p !== settings.provider)];
+  const audio = order.map(by).find((r) => r?.has_key && r.caps.live && r.live_model);
+  const screen = order.map(by).find((r) => r?.has_key && r.caps.image);
+  return {
+    audio: audio ? `${nameOf(audio.provider)} · ${audio.live_model}` : null,
+    screen: screen ? `${nameOf(screen.provider)} · ${screen.model}` : null,
+  };
+}
+
+function LivePanel({ settings, rows }: { settings: Settings; rows: ProviderInfo[] }) {
+  const [error, setError] = useState<string | null>(null);
+  const r = liveResolution(settings, rows);
+  const choose = (v: string) => {
+    setError(null);
+    liveSetProvider((v || null) as Provider | null).catch((e) => setError(String(e)));
+  };
+  return (
+    <>
+      <h2 className="group">Live 即時翻譯</h2>
+      <p className="lede">一般翻譯和 Live 可以用不同服務，例如平常用 Claude、Live 用 Gemini。</p>
+      <div className="panel">
+        <div className="row">
+          <div className="grow">
+            <div className="label">Live 使用的服務</div>
+            <div className="hint">「自動」先試預設服務，做不到時改用其他有金鑰的服務。字幕列也能切換。</div>
+          </div>
+          <select
+            className="field" value={settings.live_provider ?? ""} aria-label="Live 使用的服務"
+            onChange={(e) => choose(e.target.value)}
+          >
+            <option value="">自動</option>
+            {PROVIDERS.map((p) => {
+              const row = rows.find((x) => x.provider === p.id);
+              return (
+                <option key={p.id} value={p.id}>
+                  {p.name}{row && !row.caps.live ? "（只能看螢幕）" : ""}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+        <div className="row">
+          <div className="grow">
+            <div className="label">目前會用</div>
+            <div className="hint">
+              聽聲音：{r.audio ?? <span className="warn">沒有可用的即時模型（需要 Gemini 或 ChatGPT 的金鑰）</span>}
+              <br />
+              只看螢幕：{r.screen ?? <span className="warn">沒有能讀圖片且有金鑰的模型</span>}
+            </div>
+          </div>
+        </div>
+        {error && <div className="row-note">{error}</div>}
+      </div>
+    </>
+  );
+}
+
 export function ModelsPage({ settings, commit }: { settings: Settings; commit: (s: Settings) => void }) {
   const [info, setInfo] = useState<Record<Provider, { has_key: boolean; caps: Caps; web: boolean }> | null>(null);
+  const [rows, setRows] = useState<ProviderInfo[]>([]);
   const refresh = () => {
-    providerInfo().then((rows) => setInfo(Object.fromEntries(rows.map((r) => [r.provider, r])) as never));
+    providerInfo().then((rows) => {
+      setRows(rows);
+      setInfo(Object.fromEntries(rows.map((r) => [r.provider, r])) as never);
+    });
   };
   // Model names change what a model can read, so recheck whenever settings change.
   useEffect(refresh, [settings]);
@@ -127,6 +196,7 @@ export function ModelsPage({ settings, commit }: { settings: Settings; commit: (
           />
         ))}
       </div>
+      <LivePanel settings={settings} rows={rows} />
     </>
   );
 }

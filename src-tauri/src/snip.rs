@@ -67,6 +67,8 @@ pub struct Rect {
 }
 
 pub fn take(tutor: bool, task: contextlens_core::Task, purpose: Purpose) -> Result<Snip, String> {
+    #[cfg(target_os = "macos")]
+    crate::capture::mac::ensure_screen_capture()?;
     let err = |e: xcap::XCapError| format!("無法擷取螢幕：{e}");
     let windows = all_windows();
     let mut shots = Vec::new();

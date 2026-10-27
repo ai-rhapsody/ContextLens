@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  providerInfo, PROVIDERS, TASKS, type Hotkey, type LiveSource, type ProviderInfo, type Settings, type Source,
+  platformInfo, providerInfo, PROVIDERS, type PlatformInfo, TASKS, type Hotkey, type LiveSource, type ProviderInfo, type Settings, type Source,
   type Task,
 } from "../lib/api";
 import { eventToAccelerator, prettyAccelerator } from "../lib/hotkey";
@@ -45,6 +45,8 @@ function Recorder({ value, onPick }: { value: string; onPick: (acc: string) => v
 export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) => void }) {
   const { settings, commit } = props;
   const [info, setInfo] = useState<ProviderInfo[]>([]);
+  const [platform, setPlatform] = useState<PlatformInfo | null>(null);
+  useEffect(() => { platformInfo().then(setPlatform).catch(() => {}); }, []);
   useEffect(() => { providerInfo().then(setInfo); }, [settings]);
   const current = info.find((p) => p.provider === settings.provider);
   const name = PROVIDERS.find((p) => p.id === settings.provider)?.name;
@@ -148,6 +150,22 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
           );
         })}
         <div className="row"><button className="btn" onClick={add}>新增熱鍵</button></div>
+        {platform?.wayland && settings.hotkeys.length > 0 && (
+          <div className="soon wayland">
+            <p>
+              Wayland 不允許程式自己註冊全域熱鍵，上面的組合鍵可能沒有反應。可以到桌面的「設定 → 鍵盤 → 自訂快捷鍵」
+              新增快捷鍵，指令填下面對應的那一行：
+            </p>
+            <ol>
+              {settings.hotkeys.map((h, i) => (
+                <li key={h.id}>
+                  <code className="mono">{`"${platform.exe}" --hotkey ${i + 1}`}</code>
+                  <span className="faint"> · {SOURCES.find((x) => x.id === h.source)?.label}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
         <div className="soon">
           截圖：按下熱鍵後畫面凍結，直接框選區域、點選視窗或選全螢幕（按 1、2、3 切換），不必先另外截圖。
         </div>

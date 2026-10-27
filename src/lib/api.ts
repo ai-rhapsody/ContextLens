@@ -97,6 +97,8 @@ export const PROVIDERS: { id: Provider; name: string; vendor: string; media: str
   { id: "anthropic", name: "Claude", vendor: "Anthropic", media: "文字、圖片" },
 ];
 
+export interface PlatformInfo { os: string; wayland: boolean; exe: string }
+export const platformInfo = () => invoke<PlatformInfo>("platform_info");
 export const autostartGet = () => invoke<boolean>("autostart_get");
 export const autostartSet = (enabled: boolean) => invoke<void>("autostart_set", { enabled });
 export const getSettings = () => invoke<Settings>("get_settings");

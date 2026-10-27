@@ -39,12 +39,27 @@ fn sentinel() -> String {
 /// Electron apps can take a few hundred milliseconds.
 const COPY_WAIT: Duration = Duration::from_millis(1000);
 
+#[cfg(target_os = "windows")]
 const NOTHING_SELECTED: &str = "沒有偵測到選取的文字。先反白一段文字再按熱鍵。\
 若已經選取：目標程式以系統管理員身分執行時，Windows 不允許其他程式對它按 Ctrl+C，請以相同權限執行 ContextLens；\
 終端機等不支援 Ctrl+C 複製的程式也抓不到，可以改用「截圖」熱鍵。";
+#[cfg(target_os = "macos")]
+const NOTHING_SELECTED: &str = "沒有偵測到選取的文字。先反白一段文字再按熱鍵。\
+若已經選取：確認「系統設定 → 隱私權與安全性 → 輔助使用」裡 ContextLens 是開啟的；\
+不支援 ⌘C 複製的程式抓不到，可以改用「截圖」熱鍵。";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const NOTHING_SELECTED: &str = "沒有偵測到選取的文字。先反白一段文字再按熱鍵。\
+Wayland 下有些桌面不允許其他程式讀取選取的文字或模擬按鍵，可以改用「截圖」熱鍵。";
 
 pub fn selected_text() -> Result<String, String> {
     let mut clipboard = Clipboard::new().map_err(|e| format!("無法讀取剪貼簿：{e}"))?;
+    // On Linux, highlighting text already puts it in the PRIMARY selection: no key press needed.
+    #[cfg(target_os = "linux")]
+    if let Some(t) = primary_selection(&mut clipboard) {
+        return Ok(t);
+    }
+    #[cfg(target_os = "macos")]
+    mac::ensure_accessibility()?;
     let previous = clipboard.get_text().ok();
 
     let mark = sentinel();
@@ -100,8 +115,75 @@ fn wait_for_modifiers_released() {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn wait_for_modifiers_released() {
+    let deadline = Instant::now() + Duration::from_millis(600);
+    while mac::modifiers_held() && Instant::now() < deadline {
+        sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn wait_for_modifiers_released() {}
+
+#[cfg(target_os = "linux")]
+fn primary_selection(clipboard: &mut Clipboard) -> Option<String> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    let t = clipboard.get().clipboard(LinuxClipboardKind::Primary).text().ok()?;
+    (!t.trim().is_empty()).then_some(t)
+}
+
+#[cfg(target_os = "macos")]
+pub mod mac {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceFlagsState(state_id: i32) -> u64;
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    fn open_privacy_pane(pane: &str) {
+        let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+
+    /// Pressing ⌘C in another app needs the Accessibility permission. Without it the key
+    /// press is silently dropped, so ask up front and open the right settings pane.
+    pub fn ensure_accessibility() -> Result<(), String> {
+        if unsafe { AXIsProcessTrusted() } {
+            return Ok(());
+        }
+        open_privacy_pane("Privacy_Accessibility");
+        Err("ContextLens 需要「輔助使用」權限才能讀取選取的文字。\
+在剛打開的「系統設定 → 隱私權與安全性 → 輔助使用」裡開啟 ContextLens，再按一次熱鍵。"
+            .into())
+    }
+
+    /// Screenshots of other apps need the Screen Recording permission; without it macOS
+    /// returns only the wallpaper.
+    pub fn ensure_screen_capture() -> Result<(), String> {
+        if unsafe { CGPreflightScreenCaptureAccess() } {
+            return Ok(());
+        }
+        // Shows the system prompt the first time; later it only adds ContextLens to the list.
+        unsafe { CGRequestScreenCaptureAccess() };
+        open_privacy_pane("Privacy_ScreenCapture");
+        Err("ContextLens 需要「螢幕錄製」權限才能截圖。\
+在「系統設定 → 隱私權與安全性 → 螢幕與系統錄音」裡開啟 ContextLens，然後結束並重新開啟 ContextLens。"
+            .into())
+    }
+
+    /// Shift, Control, Option or Command still down (the hotkey's own keys).
+    pub fn modifiers_held() -> bool {
+        const MASK: u64 = 0x20000 | 0x40000 | 0x80000 | 0x100000;
+        // kCGEventSourceStateCombinedSessionState
+        unsafe { CGEventSourceFlagsState(0) & MASK != 0 }
+    }
+}
 
 fn send_copy() -> Result<(), String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("無法模擬按鍵：{e}"))?;
@@ -117,12 +199,19 @@ fn send_copy() -> Result<(), String> {
     release.map_err(err)
 }
 
+#[cfg(target_os = "windows")]
+const SCREENSHOT_KEYS: &str = "Win+Shift+S";
+#[cfg(target_os = "macos")]
+const SCREENSHOT_KEYS: &str = "⌘⌃⇧4 會把截圖放進剪貼簿";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const SCREENSHOT_KEYS: &str = "例如 Shift+PrtSc";
+
 /// The image on the clipboard, e.g. after Win+Shift+S or a screenshot tool.
 pub fn clipboard_image() -> Result<Media, String> {
     let mut clipboard = Clipboard::new().map_err(|e| format!("無法讀取剪貼簿：{e}"))?;
     let img = clipboard
         .get_image()
-        .map_err(|_| "剪貼簿裡沒有圖片。先截圖（Windows：Win+Shift+S）再按熱鍵。".to_string())?;
+        .map_err(|_| format!("剪貼簿裡沒有圖片。先截圖（{SCREENSHOT_KEYS}）再按熱鍵。"))?;
     let rgba = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())
         .ok_or("剪貼簿的圖片格式無法讀取")?;
     imaging::png_media(&rgba, "剪貼簿圖片.png")

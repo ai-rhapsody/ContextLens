@@ -166,8 +166,38 @@ fn toggle_settings(app: &AppHandle) {
     open_settings(app);
 }
 
+/// `--hotkey 2` → index 1 (hotkeys are numbered from 1 on the hotkeys page).
+fn hotkey_arg(argv: &[String]) -> Option<usize> {
+    let i = argv.iter().position(|a| a == "--hotkey")?;
+    argv.get(i + 1)?.parse::<usize>().ok()?.checked_sub(1)
+}
+
 /// Passed by the sign-in launcher so ContextLens starts with only its tray icon.
 const START_IN_TRAY_ARG: &str = "--tray";
+
+#[derive(Serialize)]
+struct PlatformInfo {
+    os: &'static str,
+    /// A Wayland session, where global hotkeys cannot be grabbed.
+    wayland: bool,
+    /// The command a desktop shortcut can run to press a hotkey.
+    exe: String,
+}
+
+#[tauri::command]
+fn platform_info() -> PlatformInfo {
+    PlatformInfo {
+        os: std::env::consts::OS,
+        wayland: cfg!(target_os = "linux")
+            && (std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland")
+                || std::env::var_os("WAYLAND_DISPLAY").is_some()),
+        // Inside an AppImage the running file is a temporary mount; APPIMAGE is the real one.
+        exe: std::env::var("APPIMAGE")
+            .ok()
+            .or_else(|| std::env::current_exe().ok().map(|p| p.display().to_string()))
+            .unwrap_or_else(|| "contextlens".into()),
+    }
+}
 
 #[tauri::command]
 fn autostart_get(app: AppHandle) -> bool {
@@ -1029,6 +1059,9 @@ async fn live_set_provider(app: AppHandle, provider: Option<Provider>) -> Result
         s.live_provider = provider;
         store::save(&app, &s)?;
     }
+    // The settings page and the caption bar both show this choice.
+    let _ = app.emit("settings-changed", ());
+    let _ = app.emit_to("live", "live-changed", ());
     let running = state.live.lock().unwrap().as_ref().map(|h| (h.sources.clone(), h.tutor));
     if let Some((sources, tutor)) = running {
         let app2 = app.clone();
@@ -1097,7 +1130,18 @@ fn history_clear(app: AppHandle, state: State<AppState>) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         // Must be registered first: a second launch hands over to the running app and exits.
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| open_settings(app)))
+        // A second launch shows the running one, or with `--hotkey N` presses hotkey N: on
+        // Wayland, where apps cannot grab global keys, a desktop shortcut can run that command.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _| match hotkey_arg(&argv) {
+            Some(n) => {
+                let hk = app.state::<AppState>().settings.lock().unwrap().hotkeys.get(n).cloned();
+                match hk {
+                    Some(hk) => trigger(app.clone(), hk),
+                    None => open_settings(app),
+                }
+            }
+            None => open_settings(app),
+        }))
         // Started by the system at sign-in: stay in the tray.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1111,6 +1155,7 @@ pub fn run() {
             get_settings,
             autostart_get,
             autostart_set,
+            platform_info,
             save_settings,
             set_api_key,
             delete_api_key,
