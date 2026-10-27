@@ -341,10 +341,25 @@ pub fn parse(msg: &str) -> Vec<ServerEvent> {
     out
 }
 
-/// True when a refusal looks like "this model cannot reply with text", so we retry with audio.
-pub fn is_modality_error(reason: &str) -> bool {
+/// Whether a refusal before setup completed is worth one retry asking for audio replies.
+/// Native-audio models (Gemini 3.8 Live) reply only with audio and reject a text request, not
+/// always with a message that names the modality; errors that audio cannot fix are excluded.
+pub fn should_retry_with_audio(reason: &str) -> bool {
     let r = reason.to_lowercase();
-    r.contains("modalit") || (r.contains("text") && r.contains("not supported"))
+    let unfixable = ["not found", "api key", "permission", "quota", "billing", "unauthenticated", "location"];
+    !unfixable.iter().any(|u| r.contains(u))
+}
+
+/// Adds what to do to the errors a user can fix in settings.
+pub fn explain_error(reason: &str, model: &str) -> String {
+    let r = reason.to_lowercase();
+    if r.contains("not found") || r.contains("is not supported for bidigeneratecontent") {
+        format!("找不到即時模型「{model}」，或它不支援 Live。到「模型與金鑰」從清單選一個即時模型。（{reason}）")
+    } else if r.contains("api key") || r.contains("unauthenticated") || r.contains("401") {
+        format!("API 金鑰無效，到「模型與金鑰」重新貼上。（{reason}）")
+    } else {
+        reason.to_string()
+    }
 }
 
 /// Turns captured audio of any rate and channel count into mono f32 at the API's rate.
@@ -522,9 +537,21 @@ mod tests {
     }
 
     #[test]
-    fn modality_errors_are_recognised() {
-        assert!(is_modality_error("Request contains an invalid argument: response modalities TEXT not supported"));
-        assert!(!is_modality_error("API key not valid"));
+    fn retries_with_audio_unless_audio_cannot_help() {
+        assert!(should_retry_with_audio("Request contains an invalid argument."));
+        assert!(should_retry_with_audio("response modalities TEXT not supported"));
+        assert!(!should_retry_with_audio("API key not valid"));
+        assert!(!should_retry_with_audio(
+            "models/gemini-3.8.live is not found for API version v1beta, or is not supported for bidiGenerateContent."
+        ));
+    }
+
+    #[test]
+    fn errors_say_what_to_do() {
+        let e = explain_error("models/gemini-3.8.live is not found for API version v1beta", "gemini-3.8.live");
+        assert!(e.contains("gemini-3.8.live") && e.contains("模型與金鑰"));
+        assert!(explain_error("API key not valid", "m").contains("金鑰"));
+        assert_eq!(explain_error("something", "m"), "something");
     }
 
     #[test]

@@ -708,13 +708,13 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                             status(&app, "reconnecting", None);
                         }
                         Outcome::Refused(r)
-                            if backend == Backend::GeminiLive && text_output && live::is_modality_error(&r) =>
+                            if backend == Backend::GeminiLive && text_output && live::should_retry_with_audio(&r) =>
                         {
-                            // This model only speaks; ask for audio and read its transcription.
+                            // Native-audio models only speak; ask for audio and read its transcription.
                             text_output = false;
                         }
                         Outcome::Refused(r) | Outcome::Failed(r) => {
-                            status(&app, "error", Some(r));
+                            status(&app, "error", Some(live::explain_error(&r, model)));
                             break;
                         }
                         Outcome::Reconnect => {
