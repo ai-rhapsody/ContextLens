@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { historyClear, historyDelete, historyList, PROVIDERS, type HistoryEntry, type Settings } from "../lib/api";
+import { historyClear, historyDelete, historyList, openLink, PROVIDERS, type HistoryEntry, type Settings } from "../lib/api";
 import { KIND_LABEL } from "../lib/files";
 import { parseSections } from "../lib/sections";
 import { Rich } from "../lib/Rich";
@@ -15,8 +15,11 @@ function when(ms: number): string {
   return d.toLocaleDateString("zh-TW", sameYear ? { month: "numeric", day: "numeric" } : undefined);
 }
 
+/** The line shown in the list: the translation, the explanation or the identification. */
 function translationOf(e: HistoryEntry): string {
-  return parseSections(e.result + "\n").find((s) => s.title === "翻譯")?.body ?? e.result;
+  const s = parseSections(e.result + "\n");
+  return (s.find((x) => x.title === "翻譯") ?? s.find((x) => x.title === "說明") ?? s.find((x) => x.title === "這是什麼"))?.body
+    ?? e.result;
 }
 
 export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; onOpenGeneral: () => void }) {
@@ -97,6 +100,16 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
                   {parseSections(e.result + "\n").map((s, i) => (
                     <section className="sec" key={i}>{s.title && <h2>{s.title}</h2>}<Rich text={s.body} /></section>
                   ))}
+                  {!!e.sources?.length && (
+                    <section className="sec sources">
+                      <h2>來源</h2>
+                      <ol>
+                        {e.sources.map(([title, url]) => (
+                          <li key={url}><button className="link" onClick={() => openLink(url)} title={url}>{title}</button></li>
+                        ))}
+                      </ol>
+                    </section>
+                  )}
                   <div className="h-actions">
                     <span className="faint grow">{provider} · {e.model}</span>
                     <button className="btn" onClick={() => copy(e)}>{copied === e.at_ms ? "已複製" : "複製譯文"}</button>

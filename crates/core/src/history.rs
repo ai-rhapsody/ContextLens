@@ -20,6 +20,9 @@ pub struct HistoryEntry {
     pub tutor: bool,
     pub provider: Provider,
     pub model: String,
+    /// Web pages a search drew on: (title, url).
+    #[serde(default)]
+    pub sources: Vec<(String, String)>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -88,6 +91,7 @@ mod tests {
             tutor: false,
             provider: Provider::Gemini,
             model: "m".into(),
+            sources: vec![],
         }
     }
 

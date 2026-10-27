@@ -4,7 +4,6 @@ import { checkForUpdate, type UpdateState } from "../lib/updater";
 import { GeneralPage } from "./GeneralPage";
 import { HistoryPage } from "./HistoryPage";
 import { HotkeysPage } from "./HotkeysPage";
-import { LivePage } from "./LivePage";
 import { ModelsPage } from "./ModelsPage";
 import { UpdatesPage } from "./UpdatesPage";
 
@@ -12,7 +11,6 @@ const PAGES = [
   { id: "general", label: "一般" },
   { id: "models", label: "模型與金鑰" },
   { id: "hotkeys", label: "熱鍵" },
-  { id: "live", label: "Live" },
   { id: "history", label: "歷史紀錄" },
   { id: "updates", label: "更新" },
 ] as const;
@@ -75,7 +73,6 @@ export function SettingsApp() {
           {page === "general" && <GeneralPage settings={settings} commit={commit} />}
           {page === "models" && <ModelsPage settings={settings} commit={commit} />}
           {page === "hotkeys" && <HotkeysPage settings={settings} commit={commit} />}
-          {page === "live" && <LivePage settings={settings} commit={commit} />}
           {page === "history" && <HistoryPage settings={settings} onOpenGeneral={() => setPage("general")} />}
           {page === "updates" && <UpdatesPage state={update} setState={setUpdate} />}
           <div className={`status-line ${status?.kind ?? ""}`} role="status">{status?.text}</div>

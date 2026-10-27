@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { closeLive, liveInfo, livePickScreen, liveStart, liveStop, showSettings, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
+import { closeLive, liveInfo, livePickScreen, liveSetProvider, liveStart, liveStop, PROVIDERS, showSettings,
+  type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
 type Turn = { input: string; output: string };
@@ -97,6 +98,24 @@ export function Live() {
   }, [turns, current]);
 
   const running = state === "connecting" || state === "listening" || state === "reconnecting";
+  // What the chosen provider (or, on automatic, any provider with a key) can do.
+  const usable = (info?.options ?? []).filter((o) => !info?.chosen || o.provider === info.chosen);
+  const canAudio = usable.some((o) => o.audio);
+  const canScreen = usable.some((o) => o.screen);
+  const noKeys = info !== null && info.options.length === 0;
+  const audioWhy = canAudio ? "" : "聽聲音需要 Gemini 或 ChatGPT 的即時模型。到設定的「模型與金鑰」填寫。";
+  const name = (p: Provider) => PROVIDERS.find((x) => x.id === p)?.name ?? p;
+
+  const chooseProvider = async (value: string) => {
+    setMessage(null);
+    try {
+      await liveSetProvider(value ? (value as Provider) : null);
+    } catch (e) {
+      setState("error");
+      setMessage(String(e));
+    }
+    refresh();
+  };
 
   const start = async (src = sources, tut = tutor) => {
     setMessage(null);
@@ -138,6 +157,9 @@ export function Live() {
     if (running) start(sources, next);
   };
 
+  // Audio sources the current provider cannot serve are left out rather than failing the start.
+  const effective = sources.filter((s) => (s === "screen" ? canScreen : canAudio));
+
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   const empty = !turns.length && !current.input && !current.output;
 
@@ -150,14 +172,19 @@ export function Live() {
         <span className="lv-meter" aria-label="音量"><i style={{ width: `${Math.round(level * 100)}%` }} /></span>
         <span className="grow" data-tauri-drag-region />
         <div className="lv-sources" role="group" aria-label="聲音來源">
-          <button aria-pressed={sources.includes("mic")} onClick={() => toggleSource("mic")}>麥克風</button>
           <button
-            aria-pressed={sources.includes("system")} onClick={() => toggleSource("system")}
-            disabled={!info?.system_audio} title={info?.system_audio ? "錄製電腦正在播放的聲音" : "系統聲音目前只支援 Windows"}
+            aria-pressed={sources.includes("mic") && canAudio} onClick={() => toggleSource("mic")}
+            disabled={!canAudio} title={audioWhy || "聽麥克風"}
+          >麥克風</button>
+          <button
+            aria-pressed={sources.includes("system") && canAudio} onClick={() => toggleSource("system")}
+            disabled={!info?.system_audio || !canAudio}
+            title={!info?.system_audio ? "系統聲音目前只支援 Windows" : audioWhy || "錄製電腦正在播放的聲音"}
           >系統聲音</button>
           <button
-            aria-pressed={sources.includes("screen")} onClick={toggleScreen}
-            title={sources.includes("screen") ? `正在看：${info?.screen ?? ""}` : "選擇要讓 Live 看的區域、視窗或螢幕"}
+            aria-pressed={sources.includes("screen")} onClick={toggleScreen} disabled={!canScreen}
+            title={!canScreen ? "看螢幕需要一個能讀圖片的模型和金鑰"
+              : sources.includes("screen") ? `正在看：${info?.screen ?? ""}` : "選擇要讓 Live 看的區域、視窗或螢幕"}
           >螢幕</button>
         </div>
         <label className="lv-tutor">
@@ -166,7 +193,13 @@ export function Live() {
         </label>
         {running
           ? <button className="btn" onClick={stop}>停止</button>
-          : <button className="btn primary" onClick={() => start()} disabled={!info?.model_ok || !sources.length}>開始</button>}
+          : (
+            <button
+              className="btn primary" onClick={() => start(effective)}
+              disabled={!effective.length}
+              title={!effective.length ? "先開一個來源" : undefined}
+            >開始</button>
+          )}
         <button className="btn quiet" onClick={() => closeLive()} aria-label="關閉並停止" title="關閉並停止（Esc）">✕</button>
       </div>
 
@@ -177,6 +210,24 @@ export function Live() {
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
         }}
       >
+        {info && !noKeys && (
+          <div className="lv-sub">
+            <span className="faint">服務</span>
+            <select
+              className="field" value={info.chosen ?? ""} aria-label="Live 使用的服務"
+              onChange={(e) => chooseProvider(e.target.value)}
+            >
+              <option value="">自動</option>
+              {info.options.map((o) => (
+                <option key={o.provider} value={o.provider}>
+                  {name(o.provider)}{o.audio ? "" : "（只能看螢幕）"}
+                </option>
+              ))}
+            </select>
+            {info.label && <span className="faint lv-label num">正在使用 {info.label}</span>}
+          </div>
+        )}
+
         {message && <div className={`lv-msg${state === "error" ? " err" : ""}`} role="status">{message}</div>}
 
         {sources.includes("screen") && info?.screen && (
@@ -189,17 +240,18 @@ export function Live() {
           </div>
         )}
 
-        {info && !info.model_ok && (
+        {noKeys && (
           <div className="lv-msg err">
-            {info.model} 不是 Live 模型。
-            <button className="btn" onClick={() => showSettings()}>到設定更改</button>
+            還沒有任何服務的金鑰。
+            <button className="btn" onClick={() => showSettings()}>開啟設定</button>
           </div>
         )}
 
-        {empty && !running && !message && info?.model_ok && (
+        {empty && !running && !message && !noKeys && (
           <p className="lv-hint">
-            選好聲音來源後按「開始」。使用 <span className="num">{info.model}</span>，開啟期間會持續計費，
-            一段時間沒有聲音會自動暫停。
+            {canAudio
+              ? "選好來源後按「開始」。聽聲音時會持續計費，一段時間沒有聲音或畫面變化會自動暫停。"
+              : "目前只能看螢幕：按「螢幕」選一塊區域，畫面上出現新文字時就會翻譯。要聽聲音，請在「模型與金鑰」設定 Gemini 或 ChatGPT 的即時模型。"}
           </p>
         )}
         {empty && state === "listening" && <p className="lv-hint">正在聆聽…說話或播放聲音就會開始翻譯。</p>}

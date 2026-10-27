@@ -29,6 +29,8 @@ pub enum Purpose {
 
 pub struct Snip {
     pub purpose: Purpose,
+    /// What to do with the selection (for `Purpose::Translate`).
+    pub task: contextlens_core::Task,
     pub monitor_x: i32,
     pub monitor_y: i32,
     pub image: RgbaImage,
@@ -57,7 +59,13 @@ pub struct Rect {
     pub h: f64,
 }
 
-pub fn take(cursor_x: i32, cursor_y: i32, tutor: bool, purpose: Purpose) -> Result<Snip, String> {
+pub fn take(
+    cursor_x: i32,
+    cursor_y: i32,
+    tutor: bool,
+    task: contextlens_core::Task,
+    purpose: Purpose,
+) -> Result<Snip, String> {
     let err = |e: xcap::XCapError| format!("無法擷取螢幕：{e}");
     let monitor = Monitor::from_point(cursor_x, cursor_y)
         .or_else(|_| Monitor::all().map_err(err)?.into_iter().next().ok_or_else(|| "找不到螢幕".to_string()))
@@ -65,7 +73,7 @@ pub fn take(cursor_x: i32, cursor_y: i32, tutor: bool, purpose: Purpose) -> Resu
     let (mx, my) = (monitor.x().map_err(err)?, monitor.y().map_err(err)?);
     let image = monitor.capture_image().map_err(err)?;
     let (mw, mh) = (image.width() as i32, image.height() as i32);
-    Ok(Snip { purpose, monitor_x: mx, monitor_y: my, windows: windows_on(mx, my, mw, mh), image, tutor })
+    Ok(Snip { purpose, task, monitor_x: mx, monitor_y: my, windows: windows_on(mx, my, mw, mh), image, tutor })
 }
 
 fn windows_on(mx: i32, my: i32, mw: i32, mh: i32) -> Vec<WinRect> {

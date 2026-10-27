@@ -1,11 +1,142 @@
-//! Gemini Live: the messages of a real-time session and the audio conversion it needs.
-//! Transport (WebSocket) and capture (microphone, system audio) live in the app.
+//! Real-time sessions (Gemini Live, OpenAI Realtime): their messages, and the audio conversion
+//! they need. Transport (WebSocket) and capture (microphone, system audio) live in the app.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 
+use crate::settings::Provider;
+
 /// Gemini Live takes 16-bit little-endian mono PCM at 16 kHz.
 pub const SAMPLE_RATE: u32 = 16_000;
+
+/// The real-time API a session talks to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Backend {
+    GeminiLive,
+    OpenAiRealtime,
+}
+
+/// Transcription model OpenAI uses for what the user said.
+const OPENAI_TRANSCRIBE: &str = "gpt-4o-mini-transcribe";
+
+impl Backend {
+    pub fn for_provider(p: Provider) -> Option<Self> {
+        match p {
+            Provider::Gemini => Some(Self::GeminiLive),
+            Provider::OpenAi => Some(Self::OpenAiRealtime),
+            Provider::Anthropic => None,
+        }
+    }
+
+    /// Input PCM rate the API expects.
+    pub fn sample_rate(self) -> u32 {
+        match self {
+            Self::GeminiLive => 16_000,
+            Self::OpenAiRealtime => 24_000,
+        }
+    }
+
+    /// Whether the server hands out handles to resume a session where it left off.
+    pub fn resumable(self) -> bool {
+        self == Self::GeminiLive
+    }
+
+    /// WebSocket URL and headers.
+    pub fn endpoint(self, api_key: &str, model: &str) -> (String, Vec<(&'static str, String)>) {
+        match self {
+            Self::GeminiLive => (url(api_key), vec![]),
+            Self::OpenAiRealtime => (
+                format!("wss://api.openai.com/v1/realtime?model={}", model.trim()),
+                vec![("Authorization", format!("Bearer {api_key}"))],
+            ),
+        }
+    }
+
+    /// Messages sent right after connecting.
+    pub fn opening(self, c: &LiveConfig) -> Vec<Value> {
+        match self {
+            Self::GeminiLive => vec![setup_message(c)],
+            Self::OpenAiRealtime => vec![json!({
+                "type": "session.update",
+                "session": {
+                    "type": "realtime",
+                    "model": c.model,
+                    "output_modalities": ["text"],
+                    "instructions": system_prompt(c.target_language, c.tutor, c.screen),
+                    "audio": { "input": {
+                        "format": { "type": "audio/pcm", "rate": 24_000 },
+                        "transcription": { "model": OPENAI_TRANSCRIBE },
+                        // Reply after each pause, and finish a reply even if the speaker carries on.
+                        "turn_detection": { "type": "server_vad", "silence_duration_ms": 500,
+                                            "create_response": true, "interrupt_response": false },
+                    } },
+                },
+            })],
+        }
+    }
+
+    pub fn audio(self, pcm16le: &[u8]) -> Vec<Value> {
+        match self {
+            Self::GeminiLive => vec![audio_message(pcm16le)],
+            Self::OpenAiRealtime => vec![json!({ "type": "input_audio_buffer.append", "audio": B64.encode(pcm16le) })],
+        }
+    }
+
+    pub fn frame(self, jpeg_b64: &str) -> Vec<Value> {
+        match self {
+            Self::GeminiLive => vec![image_message(jpeg_b64)],
+            Self::OpenAiRealtime => vec![json!({
+                "type": "conversation.item.create",
+                "item": { "type": "message", "role": "user", "content": [
+                    { "type": "input_image", "image_url": format!("data:image/jpeg;base64,{jpeg_b64}") }
+                ] },
+            })],
+        }
+    }
+
+    pub fn turn(self, text: &str) -> Vec<Value> {
+        match self {
+            Self::GeminiLive => vec![text_turn_message(text)],
+            Self::OpenAiRealtime => vec![
+                json!({ "type": "conversation.item.create", "item": { "type": "message", "role": "user",
+                        "content": [{ "type": "input_text", "text": text }] } }),
+                json!({ "type": "response.create" }),
+            ],
+        }
+    }
+
+    pub fn parse(self, msg: &str) -> Vec<ServerEvent> {
+        match self {
+            Self::GeminiLive => parse(msg),
+            Self::OpenAiRealtime => parse_openai(msg),
+        }
+    }
+}
+
+/// OpenAI Realtime server events. Accepts both the GA and the older beta event names.
+pub fn parse_openai(msg: &str) -> Vec<ServerEvent> {
+    let Ok(v) = serde_json::from_str::<Value>(msg) else { return vec![] };
+    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    match v.get("type").and_then(Value::as_str).unwrap_or_default() {
+        "session.updated" => vec![ServerEvent::SetupComplete],
+        "conversation.item.input_audio_transcription.completed" => {
+            let t = s("transcript");
+            if t.trim().is_empty() { vec![] } else { vec![ServerEvent::Input(t)] }
+        }
+        "response.output_text.delta" | "response.text.delta" => vec![ServerEvent::Output(s("delta"))],
+        "response.done" => {
+            let failed = v.pointer("/response/status").and_then(Value::as_str) == Some("failed");
+            match v.pointer("/response/status_details/error/message").and_then(Value::as_str) {
+                Some(m) if failed => vec![ServerEvent::Error(m.into())],
+                _ => vec![ServerEvent::TurnComplete],
+            }
+        }
+        "error" => vec![ServerEvent::Error(
+            v.pointer("/error/message").and_then(Value::as_str).unwrap_or("OpenAI Realtime 錯誤").into(),
+        )],
+        _ => vec![],
+    }
+}
 
 pub fn url(api_key: &str) -> String {
     format!(
@@ -216,10 +347,11 @@ pub fn is_modality_error(reason: &str) -> bool {
     r.contains("modalit") || (r.contains("text") && r.contains("not supported"))
 }
 
-/// Turns captured audio of any rate and channel count into 16 kHz mono f32.
+/// Turns captured audio of any rate and channel count into mono f32 at the API's rate.
 /// Linear interpolation is plenty for speech recognition.
 pub struct Resampler {
     in_rate: f64,
+    out_rate: f64,
     channels: usize,
     /// Position of the next output sample, in input samples, relative to `last`.
     pos: f64,
@@ -227,12 +359,23 @@ pub struct Resampler {
 }
 
 impl Resampler {
+    /// To 16 kHz (Gemini Live).
     pub fn new(in_rate: u32, channels: u16) -> Self {
-        Self { in_rate: in_rate as f64, channels: channels.max(1) as usize, pos: 0.0, last: None }
+        Self::to_rate(in_rate, channels, SAMPLE_RATE)
+    }
+
+    pub fn to_rate(in_rate: u32, channels: u16, out_rate: u32) -> Self {
+        Self {
+            in_rate: in_rate as f64,
+            out_rate: out_rate as f64,
+            channels: channels.max(1) as usize,
+            pos: 0.0,
+            last: None,
+        }
     }
 
     pub fn push(&mut self, interleaved: &[f32], out: &mut Vec<f32>) {
-        let step = self.in_rate / SAMPLE_RATE as f64;
+        let step = self.in_rate / self.out_rate;
         let mono: Vec<f32> = interleaved
             .chunks(self.channels)
             .map(|f| f.iter().sum::<f32>() / f.len() as f32)
@@ -405,6 +548,52 @@ mod tests {
         }
         assert!((out.len() as i64 - 16_000).abs() <= 2, "{}", out.len());
         assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-6));
+    }
+
+    #[test]
+    fn resampler_targets_other_rates() {
+        let mut r = Resampler::to_rate(48_000, 1, 24_000);
+        let mut out = Vec::new();
+        r.push(&vec![0.1; 48_000], &mut out);
+        assert!((out.len() as i64 - 24_000).abs() <= 2, "{}", out.len());
+    }
+
+    #[test]
+    fn openai_session_asks_for_text_at_24khz_with_transcription() {
+        let c = cfg(true);
+        let (url, headers) = Backend::OpenAiRealtime.endpoint("K", "gpt-realtime");
+        assert!(url.ends_with("/v1/realtime?model=gpt-realtime"));
+        assert_eq!(headers[0], ("Authorization", "Bearer K".to_string()));
+        let m = &Backend::OpenAiRealtime.opening(&c)[0];
+        assert_eq!(m["type"], "session.update");
+        assert_eq!(m["session"]["output_modalities"][0], "text");
+        assert_eq!(m["session"]["audio"]["input"]["format"]["rate"], 24_000);
+        assert_eq!(m["session"]["audio"]["input"]["turn_detection"]["interrupt_response"], false);
+        assert_eq!(Backend::OpenAiRealtime.sample_rate(), 24_000);
+        assert_eq!(Backend::OpenAiRealtime.audio(&[1, 0])[0]["type"], "input_audio_buffer.append");
+        let t = Backend::OpenAiRealtime.turn("hi");
+        assert_eq!(t[1]["type"], "response.create");
+        // Gemini keeps its key in the URL and needs no headers.
+        assert!(Backend::GeminiLive.endpoint("K", "m").1.is_empty());
+        assert!(Backend::for_provider(Provider::Anthropic).is_none());
+    }
+
+    #[test]
+    fn openai_events_map_to_the_shared_ones() {
+        assert_eq!(parse_openai(r#"{"type":"session.updated"}"#), vec![ServerEvent::SetupComplete]);
+        assert_eq!(
+            parse_openai(r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello"}"#),
+            vec![ServerEvent::Input("hello".into())]
+        );
+        assert_eq!(parse_openai(r#"{"type":"response.output_text.delta","delta":"你"}"#), vec![ServerEvent::Output("你".into())]);
+        assert_eq!(parse_openai(r#"{"type":"response.text.delta","delta":"好"}"#), vec![ServerEvent::Output("好".into())]);
+        assert_eq!(parse_openai(r#"{"type":"response.done","response":{"status":"completed"}}"#), vec![ServerEvent::TurnComplete]);
+        assert_eq!(
+            parse_openai(r#"{"type":"response.done","response":{"status":"failed","status_details":{"error":{"message":"quota"}}}}"#),
+            vec![ServerEvent::Error("quota".into())]
+        );
+        assert_eq!(parse_openai(r#"{"type":"error","error":{"message":"bad model"}}"#), vec![ServerEvent::Error("bad model".into())]);
+        assert!(parse_openai(r#"{"type":"input_audio_buffer.speech_started"}"#).is_empty());
     }
 
     #[test]

@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { providerInfo, PROVIDERS, type Hotkey, type ProviderInfo, type Settings, type Source } from "../lib/api";
+import {
+  providerInfo, PROVIDERS, TASKS, type Hotkey, type ProviderInfo, type Settings, type Source, type Task,
+} from "../lib/api";
 import { eventToAccelerator, prettyAccelerator } from "../lib/hotkey";
 
 const SOURCES: { id: Source; label: string; needsImage: boolean }[] = [
+  { id: "screen", label: "截圖", needsImage: true },
   { id: "selection", label: "選取的文字", needsImage: false },
-  { id: "screen", label: "螢幕擷取（區域、視窗、全螢幕）", needsImage: true },
-  { id: "clipboard_image", label: "剪貼簿裡的圖片", needsImage: true },
+  { id: "clipboard_image", label: "剪貼簿圖片", needsImage: true },
   { id: "live", label: "Live 即時翻譯（開／關）", needsImage: false },
 ];
 
@@ -48,19 +50,26 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
     const free = ["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5"].find((a) => !taken.has(a)) ?? "Alt+9";
     commit({
       ...settings,
-      hotkeys: [...settings.hotkeys, { id: `hk-${Date.now().toString(36)}`, accelerator: free, source: "selection", tutor: false }],
+      hotkeys: [
+        ...settings.hotkeys,
+        { id: `hk-${Date.now().toString(36)}`, accelerator: free, source: "screen", task: "explain", tutor: false },
+      ],
     });
   };
 
   return (
     <>
       <h1>熱鍵</h1>
-      <p className="lede">每個熱鍵決定從哪裡取得內容，以及要不要附上教學說明。點組合鍵按鈕後直接按下新的組合。</p>
+      <p className="lede">
+        每個熱鍵決定從哪裡取得內容、要做什麼：翻譯、解釋或搜尋。翻譯視窗裡也能隨時切換。點組合鍵按鈕後直接按下新的組合。
+      </p>
       <div className="panel">
         {settings.hotkeys.length === 0 && <div className="empty">還沒有熱鍵。新增一個開始使用。</div>}
         {settings.hotkeys.map((h) => {
+          const isLive = h.source === "live";
           const needsImage = SOURCES.find((s) => s.id === h.source)?.needsImage;
-          const warn = needsImage && current && !current.caps.image;
+          const noImage = needsImage && current && !current.caps.image;
+          const noWeb = !isLive && h.task === "search" && current && !current.web;
           return (
             <div className="hk" key={h.id}>
               <div className="row">
@@ -71,10 +80,19 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
                 >
                   {SOURCES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
-                <label className="inline-switch">
-                  教學
+                {!isLive && (
+                  <select
+                    className="field" value={h.task} aria-label="動作" style={{ width: 92 }}
+                    onChange={(e) => patch(h.id, { task: e.target.value as Task })}
+                  >
+                    {TASKS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                )}
+                <label className="inline-switch" style={{ visibility: isLive || h.task === "translate" ? "visible" : "hidden" }}>
+                  {isLive ? "註解" : "教學"}
                   <button
-                    className="switch" role="switch" aria-checked={h.tutor} aria-label="附上教學說明"
+                    className="switch" role="switch" aria-checked={h.tutor}
+                    aria-label={isLive ? "Live 教學註解" : "附上教學說明"}
                     onClick={() => patch(h.id, { tutor: !h.tutor })}
                   />
                 </label>
@@ -83,9 +101,14 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
                   onClick={() => commit({ ...settings, hotkeys: settings.hotkeys.filter((x) => x.id !== h.id) })}
                 >刪除</button>
               </div>
-              {warn && (
+              {noImage && (
                 <div className="row-note">
                   目前的模型（{name} · {current!.model}）不能讀取圖片。按下時會提供改用其他服務的選項。
+                </div>
+              )}
+              {noWeb && (
+                <div className="row-note">
+                  目前的模型（{name} · {current!.model}）無法上網，搜尋會改用模型本身的知識。Gemini 和 Claude 可以上網搜尋。
                 </div>
               )}
             </div>
@@ -93,7 +116,7 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
         })}
         <div className="row"><button className="btn" onClick={add}>新增熱鍵</button></div>
         <div className="soon">
-          螢幕擷取：按下後畫面會凍結，可切換區域、視窗、全螢幕（按 1、2、3）。剪貼簿圖片適合搭配 Windows 的 Win+Shift+S。
+          截圖：按下熱鍵後畫面凍結，直接框選區域、點選視窗或選全螢幕（按 1、2、3 切換），不必先另外截圖。
         </div>
       </div>
     </>

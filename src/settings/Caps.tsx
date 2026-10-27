@@ -1,7 +1,7 @@
 import type { Caps } from "../lib/api";
 
 const ITEMS: [keyof Caps | "text", string][] = [
-  ["text", "文字"], ["image", "圖片"], ["audio", "音訊"], ["video", "影片"], ["live", "Live"],
+  ["text", "文字"], ["image", "圖片"], ["audio", "音訊"], ["video", "影片"], ["live", "Live 聽聲音"],
 ];
 
 /** What a model can read, as a row of labels; unsupported ones are struck through and faint. */

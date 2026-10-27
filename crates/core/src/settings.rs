@@ -44,6 +44,19 @@ pub enum Source {
     Live,
 }
 
+/// What to do with the captured content.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Task {
+    /// Read the words and translate them (optionally with tutor notes).
+    #[default]
+    Translate,
+    /// Explain what it means: a chart's finding, a diagram, a meme, code, a maths problem.
+    Explain,
+    /// Identify it and look it up on the web.
+    Search,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(from = "HotkeyWire")]
 pub struct Hotkey {
@@ -51,6 +64,7 @@ pub struct Hotkey {
     /// Accelerator string, e.g. `CommandOrControl+Shift+T`.
     pub accelerator: String,
     pub source: Source,
+    pub task: Task,
     /// Explain structure, usage and background as well as translating.
     pub tutor: bool,
 }
@@ -61,6 +75,7 @@ struct HotkeyWire {
     id: String,
     accelerator: String,
     source: Option<Source>,
+    task: Option<Task>,
     tutor: Option<bool>,
     action: Option<String>,
 }
@@ -72,6 +87,7 @@ impl From<HotkeyWire> for Hotkey {
             id: w.id,
             accelerator: w.accelerator,
             source: w.source.unwrap_or(Source::Selection),
+            task: w.task.unwrap_or_default(),
             tutor: w.tutor.unwrap_or(legacy_tutor),
         }
     }
@@ -83,8 +99,10 @@ pub struct Models {
     pub gemini: String,
     pub openai: String,
     pub anthropic: String,
-    /// The Gemini model used for Live sessions; only models the capability table marks as live.
+    /// Gemini model for Live sessions (Live API).
     pub gemini_live: String,
+    /// OpenAI model for Live sessions (Realtime API).
+    pub openai_realtime: String,
 }
 
 impl Default for Models {
@@ -94,6 +112,7 @@ impl Default for Models {
             openai: "gpt-5-mini".into(),
             anthropic: "claude-haiku-5-5".into(),
             gemini_live: "gemini-live-2.5-flash-preview".into(),
+            openai_realtime: "gpt-realtime".into(),
         }
     }
 }
@@ -108,6 +127,8 @@ pub struct Settings {
     pub hotkeys: Vec<Hotkey>,
     /// Live sessions pause by themselves after this many minutes without sound (0 = never).
     pub live_idle_minutes: u32,
+    /// Provider for Live sessions; None picks one automatically.
+    pub live_provider: Option<Provider>,
     /// Keep finished translations in the history list.
     pub save_history: bool,
     /// Last size of the translation window, in logical pixels.
@@ -120,6 +141,7 @@ impl Default for Settings {
             id: id.into(),
             accelerator: acc.into(),
             source,
+            task: Task::Translate,
             tutor,
         };
         Self {
@@ -132,6 +154,7 @@ impl Default for Settings {
                 hk("default-screen", "CommandOrControl+Alt+S", Source::Screen, false),
             ],
             live_idle_minutes: 3,
+            live_provider: None,
             save_history: true,
             popup_size: None,
         }
@@ -147,10 +170,16 @@ impl Settings {
         }
     }
 
-    pub fn validate(&self) -> Result<(), String> {
-        if self.models.gemini_live.trim().is_empty() {
-            return Err("Live 模型名稱不能是空的".into());
+    /// The model a provider uses for Live, if it has a real-time API.
+    pub fn live_model_for(&self, provider: Provider) -> Option<&str> {
+        match provider {
+            Provider::Gemini => Some(&self.models.gemini_live),
+            Provider::OpenAi => Some(&self.models.openai_realtime),
+            Provider::Anthropic => None,
         }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
         if self.target_language.trim().is_empty() {
             return Err("目標語言不能是空的".into());
         }
@@ -207,6 +236,7 @@ mod tests {
         assert_eq!(s.hotkeys.len(), 2);
         assert_eq!((s.hotkeys[0].source, s.hotkeys[0].tutor), (Source::Selection, false));
         assert_eq!((s.hotkeys[1].source, s.hotkeys[1].tutor), (Source::Selection, true));
+        assert_eq!(s.hotkeys[1].task, Task::Translate);
         // Written back in the new shape, without the legacy field.
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"source\":\"selection\"") && !json.contains("action"));
@@ -216,6 +246,7 @@ mod tests {
     fn wire_names() {
         assert_eq!(serde_json::to_string(&Provider::OpenAi).unwrap(), "\"openai\"");
         assert_eq!(serde_json::to_string(&Source::ClipboardImage).unwrap(), "\"clipboard_image\"");
+        assert_eq!(serde_json::to_string(&Task::Search).unwrap(), "\"search\"");
     }
 
     #[test]

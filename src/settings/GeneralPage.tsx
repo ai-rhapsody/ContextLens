@@ -7,7 +7,7 @@ export function GeneralPage({ settings, commit }: { settings: Settings; commit: 
   return (
     <>
       <h1>一般</h1>
-      <p className="lede">要不要附上教學說明，由每個熱鍵自己決定，在翻譯視窗裡也能隨時切換。</p>
+      <p className="lede">要翻譯、解釋或搜尋，以及要不要附上教學說明，由每個熱鍵自己決定，在翻譯視窗裡也能隨時切換。</p>
       <div className="panel">
         <div className="row">
           <div className="grow">
@@ -31,6 +31,18 @@ export function GeneralPage({ settings, commit }: { settings: Settings; commit: 
             className="switch" role="switch" aria-checked={settings.save_history} aria-label="保存歷史紀錄"
             onClick={() => commit({ ...settings, save_history: !settings.save_history })}
           />
+        </div>
+        <div className="row">
+          <div className="grow">
+            <div className="label">Live 閒置時自動暫停</div>
+            <div className="hint">一段時間沒有聲音或畫面變化就停止，避免忘記關閉而持續計費。</div>
+          </div>
+          <select
+            className="field" value={settings.live_idle_minutes} aria-label="Live 閒置自動暫停"
+            onChange={(e) => commit({ ...settings, live_idle_minutes: Number(e.target.value) })}
+          >
+            {[1, 3, 5, 10, 0].map((m) => <option key={m} value={m}>{m ? `${m} 分鐘後` : "不自動暫停"}</option>)}
+          </select>
         </div>
       </div>
     </>

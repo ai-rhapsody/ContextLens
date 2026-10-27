@@ -271,3 +271,21 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 .lv-screen { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
 .lv-screen .lv-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .lv-screen .btn { height: 24px; padding: 0 8px; font-size: 12px; }
+
+/* popup: tasks, search results */
+.tasks { display: flex; border: 1px solid var(--control); border-radius: var(--radius-control); overflow: hidden; flex: none; }
+.tasks button { height: 26px; padding: 0 10px; border: 0; background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; }
+.tasks button + button { border-left: 1px solid var(--control); }
+.tasks button[aria-selected="true"] { background: var(--primary); color: var(--on-primary); }
+.pop-head .grow { flex: 1; align-self: stretch; }
+.foot-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queries { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--control); background: var(--surface); cursor: pointer; font-size: 13px; }
+.chip:hover { background: var(--active); }
+.sources ol { margin: 0; padding-left: 18px; font-size: 13px; line-height: 20px; }
+.link { border: 0; padding: 0; background: none; color: var(--accent); cursor: pointer; text-align: left; font: inherit; }
+.link:hover { text-decoration: underline; }
+.offline { margin: 0 0 10px; font-size: 12px; }
+.lv-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.lv-sub .field { height: 26px; font-size: 12px; padding: 0 6px; }
+.lv-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

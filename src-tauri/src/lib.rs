@@ -6,7 +6,8 @@ mod snip;
 mod store;
 
 use contextlens_core::{
-    caps, prompt, Caps, ChatRequest, History, HistoryEntry, Hotkey, Media, Provider, Settings, Source,
+    caps, live::Backend, prompt, Caps, ChatRequest, Delta, History, HistoryEntry, Hotkey, Media, Provider,
+    Settings, Source, Task,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -27,6 +28,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 struct Capture {
     text: String,
     media: Option<Media>,
+    task: Task,
     tutor: bool,
     /// Set when capturing failed; the popup shows it instead of translating.
     error: Option<String>,
@@ -53,6 +55,7 @@ struct AppState {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StreamEvent {
     Delta { text: String },
+    Source { title: String, url: String },
     Done,
     Error { message: String },
 }
@@ -188,6 +191,35 @@ fn stop_live(app: &AppHandle) {
     let _ = app.emit_to("live", "live-ended", ());
 }
 
+/// Chooses where a Live session goes. Audio needs a real-time model (Gemini Live, OpenAI
+/// Realtime); the screen alone works with any model that reads images. The chosen provider
+/// comes first, then the default provider, then the others, keeping only those with a key.
+fn pick_engine(s: &Settings, audio: bool) -> Result<live::Engine, String> {
+    let order: Vec<Provider> = match s.live_provider {
+        Some(p) => vec![p],
+        None => std::iter::once(s.provider).chain(Provider::ALL.into_iter().filter(|p| *p != s.provider)).collect(),
+    };
+    for p in order {
+        let Some(api_key) = secrets::get(p) else { continue };
+        if audio {
+            let (Some(backend), Some(model)) = (Backend::for_provider(p), s.live_model_for(p)) else { continue };
+            if caps::is_live_model(p, model) {
+                return Ok(live::Engine::Realtime { backend, model: model.into(), api_key });
+            }
+        } else if caps::for_model(p, s.model_for(p)).image {
+            return Ok(live::Engine::Reader { provider: p, model: s.model_for(p).into(), api_key });
+        }
+    }
+    Err(match (audio, s.live_provider) {
+        (true, Some(p)) => format!(
+            "{} 沒有可用的即時模型或金鑰。到「模型與金鑰」設定即時模型，或在字幕列改用其他服務。",
+            p.display_name()
+        ),
+        (true, None) => "聽聲音需要 Gemini 或 ChatGPT 的金鑰和即時模型。到「模型與金鑰」設定。".into(),
+        (false, _) => "看螢幕需要一個能讀圖片的模型和它的金鑰。".into(),
+    })
+}
+
 fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     if let Some(old) = state.live.lock().unwrap().take() {
@@ -198,15 +230,20 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
     }
     // Remember the choice even if starting fails, so "開始" retries it once the problem is fixed.
     *state.live_sources.lock().unwrap() = sources.clone();
-    let (model, target_language, idle_minutes) = {
-        let s = state.settings.lock().unwrap();
-        (s.models.gemini_live.clone(), s.target_language.clone(), s.live_idle_minutes)
+    let settings = state.settings.lock().unwrap().clone();
+    let mut sources = sources;
+    let audio = sources.iter().any(|s| *s != live::LiveSource::Screen);
+    let engine = match pick_engine(&settings, audio) {
+        Ok(e) => e,
+        // Nothing can listen, but the screen can still be watched: do that, and say why.
+        Err(why) if audio && sources.contains(&live::LiveSource::Screen) => {
+            sources.retain(|s| *s == live::LiveSource::Screen);
+            let e = pick_engine(&settings, false)?;
+            live_status(app, "connecting", Some(format!("{why} 這次先只看螢幕。")));
+            e
+        }
+        Err(why) => return Err(why),
     };
-    if !caps::for_model(Provider::Gemini, &model).live {
-        return Err(format!("{model} 不是 Live 模型。到設定的「Live」頁換一個名稱含 live 的 Gemini 模型。"));
-    }
-    let api_key = secrets::get(Provider::Gemini)
-        .ok_or("Live 模式使用 Gemini，還沒設定 Gemini 的 API 金鑰。")?;
     let watches_screen = sources.contains(&live::LiveSource::Screen);
     let screen = state.live_screen.lock().unwrap().clone();
     // Keep the caption bar out of the frames, so the model never reads its own captions
@@ -216,7 +253,14 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
     }
     let handle = live::start(
         app.clone(),
-        live::StartArgs { sources, tutor, model, target_language, api_key, idle_minutes, screen },
+        live::StartArgs {
+            sources,
+            tutor,
+            engine,
+            target_language: settings.target_language,
+            idle_minutes: settings.live_idle_minutes,
+            screen,
+        },
     )?;
     *state.live.lock().unwrap() = Some(handle);
     Ok(())
@@ -245,21 +289,21 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 
 fn trigger(app: AppHandle, hotkey: Hotkey) {
     tauri::async_runtime::spawn(async move {
-        let tutor = hotkey.tutor;
-        let failed = |message: String| Capture { tutor, error: Some(message), ..Default::default() };
+        let (tutor, task) = (hotkey.tutor, hotkey.task);
+        let failed = |message: String| Capture { tutor, task, error: Some(message), ..Default::default() };
         match hotkey.source {
             Source::Selection => {
                 // Let the user's fingers leave the hotkey before we press Copy.
                 let _ = blocking(|| Ok(std::thread::sleep(std::time::Duration::from_millis(150)))).await;
                 let capture = match blocking(capture::selected_text).await {
-                    Ok(text) => Capture { text, tutor, ..Default::default() },
+                    Ok(text) => Capture { text, tutor, task, ..Default::default() },
                     Err(e) => failed(e),
                 };
                 show_popup(&app, capture);
             }
             Source::ClipboardImage => {
                 let capture = match blocking(capture::clipboard_image).await {
-                    Ok(media) => Capture { media: Some(media), tutor, ..Default::default() },
+                    Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
                     Err(e) => failed(e),
                 };
                 show_popup(&app, capture);
@@ -278,7 +322,7 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
             }
             Source::Screen => {
                 let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
-                match blocking(move || snip::take(x, y, tutor, snip::Purpose::Translate)).await {
+                match blocking(move || snip::take(x, y, tutor, task, snip::Purpose::Translate)).await {
                     Ok(s) => {
                         let opened = open_snip_window(&app, &s);
                         *app.state::<AppState>().snip.lock().unwrap() = Some(s);
@@ -347,6 +391,10 @@ struct ProviderInfo {
     model: String,
     caps: Caps,
     has_key: bool,
+    /// Can search the web (Search task).
+    web: bool,
+    /// The real-time model, for providers that have a real-time API.
+    live_model: Option<String>,
 }
 
 /// Each provider with its configured model, what that model takes, and whether a key is stored.
@@ -357,7 +405,20 @@ async fn provider_info(state: State<'_, AppState>) -> Result<Vec<ProviderInfo>, 
         .iter()
         .map(|&p| {
             let model = settings.model_for(p).to_string();
-            ProviderInfo { provider: p, caps: caps::for_model(p, &model), has_key: secrets::get(p).is_some(), model }
+            let live_model = settings.live_model_for(p).map(String::from);
+            // "Live" means the provider's real-time model is usable, not the text model.
+            let caps = Caps {
+                live: live_model.as_deref().is_some_and(|m| caps::is_live_model(p, m)),
+                ..caps::for_model(p, &model)
+            };
+            ProviderInfo {
+                provider: p,
+                web: contextlens_core::can_search(p, &model),
+                caps,
+                has_key: secrets::get(p).is_some(),
+                model,
+                live_model,
+            }
         })
         .collect())
 }
@@ -426,10 +487,10 @@ async fn finish_snip(app: AppHandle, rect: snip::Rect, label: Option<String>) ->
         let _ = app.emit_to("live", "live-changed", ()); // the caption bar re-reads its state
         return Ok(());
     }
-    let tutor = s.tutor;
+    let (tutor, task) = (s.tutor, s.task);
     let capture = match blocking(move || snip::crop(&s, rect)).await {
-        Ok(media) => Capture { media: Some(media), tutor, ..Default::default() },
-        Err(e) => Capture { tutor, error: Some(e), ..Default::default() },
+        Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
+        Err(e) => Capture { tutor, task, error: Some(e), ..Default::default() },
     };
     show_popup(&app, capture);
     Ok(())
@@ -458,7 +519,7 @@ async fn stream(
     model: &str,
     req: &ChatRequest,
     gen: Option<u64>,
-    mut emit: impl FnMut(&str) -> bool,
+    mut emit: impl FnMut(Delta) -> bool,
 ) -> Result<(), String> {
     let key = secrets::get(provider).ok_or_else(|| {
         format!("還沒設定 {} 的 API 金鑰。到「模型與金鑰」貼上金鑰。", provider.display_name())
@@ -481,6 +542,7 @@ async fn run_translation(
     app: AppHandle,
     state: State<'_, AppState>,
     input: Input,
+    task: Task,
     tutor: bool,
     // Use another provider for this request only, e.g. when the default cannot read video.
     provider: Option<Provider>,
@@ -492,17 +554,27 @@ async fn run_translation(
         let p = provider.unwrap_or(s.provider);
         (p, s.model_for(p).to_string(), s.target_language.clone(), s.save_history)
     };
-    let mode = if tutor { prompt::Mode::Tutor } else { prompt::Mode::Translate };
     let media = match input.media {
         Some(m) => Some(blocking(move || Ok(imaging::prepare(provider, m))).await?),
         None => None,
     };
-    let req = prompt::build(mode, &input.text, media, &lang);
+    let web = contextlens_core::can_search(provider, &model);
+    let req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
 
     let mut full = String::new();
-    let result = stream(&state, provider, &model, &req, Some(gen), |t| {
-        full.push_str(t);
-        on_event.send(StreamEvent::Delta { text: t.to_string() }).is_ok()
+    let mut sources: Vec<(String, String)> = Vec::new();
+    let result = stream(&state, provider, &model, &req, Some(gen), |d| match d {
+        Delta::Text(t) => {
+            full.push_str(&t);
+            on_event.send(StreamEvent::Delta { text: t }).is_ok()
+        }
+        Delta::Source { title, url } => {
+            if sources.iter().any(|(_, u)| *u == url) {
+                return true;
+            }
+            sources.push((title.clone(), url.clone()));
+            on_event.send(StreamEvent::Source { title, url }).is_ok()
+        }
     })
     .await;
     // A newer request owns the popup now; stay silent and keep nothing.
@@ -528,6 +600,7 @@ async fn run_translation(
             tutor,
             provider,
             model,
+            sources,
         };
         let mut h = state.history.lock().unwrap();
         h.push(entry);
@@ -546,7 +619,12 @@ async fn run_translation(
 #[tauri::command]
 async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<String, String> {
     let model = state.settings.lock().unwrap().model_for(args.provider).to_string();
-    let req = ChatRequest { system: "Reply with the single word OK.".into(), user: "ping".into(), media: vec![] };
+    let req = ChatRequest {
+        system: "Reply with the single word OK.".into(),
+        user: "ping".into(),
+        media: vec![],
+        web_search: false,
+    };
     stream(&state, args.provider, &model, &req, None, |_| true).await?;
     Ok(model)
 }
@@ -554,30 +632,73 @@ async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<Stri
 // ---------- commands: live ----------
 
 #[derive(Serialize)]
+struct LiveOption {
+    provider: Provider,
+    /// Has a key and a real-time model, so it can listen.
+    audio: bool,
+    /// Has a key and a model that reads images, so it can watch the screen.
+    screen: bool,
+}
+
+#[derive(Serialize)]
 struct LiveInfo {
     running: bool,
     sources: Vec<live::LiveSource>,
     tutor: bool,
-    model: String,
-    model_ok: bool,
+    /// The running session's provider and model.
+    label: Option<String>,
+    /// The provider chosen in the caption bar; None means automatic.
+    chosen: Option<Provider>,
+    options: Vec<LiveOption>,
     system_audio: bool,
     /// What the screen source watches, if one was picked.
     screen: Option<String>,
 }
 
 #[tauri::command]
-fn live_info(state: State<AppState>) -> LiveInfo {
-    let model = state.settings.lock().unwrap().models.gemini_live.clone();
-    let current = state.live.lock().unwrap();
+async fn live_info(app: AppHandle) -> LiveInfo {
+    // Reads the keychain, which can block, so this runs off the main thread.
+    let state = app.state::<AppState>();
+    let settings = state.settings.lock().unwrap().clone();
+    let options = Provider::ALL
+        .iter()
+        .filter(|p| secrets::get(**p).is_some())
+        .map(|&p| LiveOption {
+            provider: p,
+            audio: settings.live_model_for(p).is_some_and(|m| caps::is_live_model(p, m)),
+            screen: caps::for_model(p, settings.model_for(p)).image,
+        })
+        .collect();
+    let running = state.live.lock().unwrap().as_ref().map(|h| (h.sources.clone(), h.tutor, h.label.clone()));
+    let last_sources = state.live_sources.lock().unwrap().clone();
+    let screen = state.live_screen.lock().unwrap().as_ref().map(|t| t.label.clone());
     LiveInfo {
-        running: current.is_some(),
-        sources: current.as_ref().map_or_else(|| state.live_sources.lock().unwrap().clone(), |h| h.sources.clone()),
-        tutor: current.as_ref().is_some_and(|h| h.tutor),
-        model_ok: caps::for_model(Provider::Gemini, &model).live,
-        model,
+        running: running.is_some(),
+        sources: running.as_ref().map_or(last_sources, |r| r.0.clone()),
+        tutor: running.as_ref().is_some_and(|r| r.1),
+        label: running.map(|r| r.2),
+        chosen: settings.live_provider,
+        options,
         system_audio: live::SYSTEM_AUDIO_SUPPORTED,
-        screen: state.live_screen.lock().unwrap().as_ref().map(|t| t.label.clone()),
+        screen,
     }
+}
+
+/// Picks the provider for Live (None = automatic); a running session restarts with it.
+#[tauri::command]
+async fn live_set_provider(app: AppHandle, provider: Option<Provider>) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.live_provider = provider;
+        store::save(&app, &s)?;
+    }
+    let running = state.live.lock().unwrap().as_ref().map(|h| (h.sources.clone(), h.tutor));
+    if let Some((sources, tutor)) = running {
+        let app2 = app.clone();
+        blocking(move || start_live(&app2, sources, tutor)).await?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -600,7 +721,7 @@ fn open_live(app: AppHandle) {
 #[tauri::command]
 async fn live_pick_screen(app: AppHandle) -> Result<(), String> {
     let (x, y) = app.cursor_position().map(|p| (p.x as i32, p.y as i32)).unwrap_or((0, 0));
-    let s = blocking(move || snip::take(x, y, false, snip::Purpose::LiveTarget)).await?;
+    let s = blocking(move || snip::take(x, y, false, Task::Translate, snip::Purpose::LiveTarget)).await?;
     open_snip_window(&app, &s)?;
     *app.state::<AppState>().snip.lock().unwrap() = Some(s);
     Ok(())
@@ -647,6 +768,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
@@ -672,6 +794,7 @@ pub fn run() {
             open_live,
             close_live,
             live_pick_screen,
+            live_set_provider,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

@@ -2,20 +2,29 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Provider = "gemini" | "openai" | "anthropic";
 export type Source = "selection" | "screen" | "clipboard_image" | "live";
+export type Task = "translate" | "explain" | "search";
+
+export const TASKS: { id: Task; label: string; hint: string }[] = [
+  { id: "translate", label: "翻譯", hint: "辨識文字並翻譯" },
+  { id: "explain", label: "解釋", hint: "說明內容：圖表、示意圖、迷因、程式碼、題目" },
+  { id: "search", label: "搜尋", hint: "辨識這是什麼並上網查資料" },
+];
 export type LiveSource = "mic" | "system" | "screen";
 
 export interface Hotkey {
   id: string;
   accelerator: string;
   source: Source;
+  task: Task;
   tutor: boolean;
 }
 
 export interface Settings {
   target_language: string;
   provider: Provider;
-  models: Record<Provider, string> & { gemini_live: string };
+  models: Record<Provider, string> & { gemini_live: string; openai_realtime: string };
   live_idle_minutes: number;
+  live_provider: Provider | null;
   hotkeys: Hotkey[];
   save_history: boolean;
   popup_size: [number, number] | null;
@@ -30,6 +39,7 @@ export interface Media {
 export interface Capture {
   text: string;
   media: Media | null;
+  task: Task;
   tutor: boolean;
   error: string | null;
 }
@@ -43,6 +53,7 @@ export interface HistoryEntry {
   tutor: boolean;
   provider: Provider;
   model: string;
+  sources?: [string, string][];
 }
 
 export interface WinRect { x: number; y: number; w: number; h: number; title: string }
@@ -53,11 +64,18 @@ export interface SnipView {
 export interface Rect { x: number; y: number; w: number; h: number }
 
 export interface Caps { image: boolean; audio: boolean; video: boolean; live: boolean }
-export interface ProviderInfo { provider: Provider; model: string; caps: Caps; has_key: boolean }
+export interface ProviderInfo {
+  provider: Provider; model: string; caps: Caps; has_key: boolean;
+  /** Can search the web (Search task). */
+  web: boolean;
+  /** The real-time model, for providers that have a real-time API. */
+  live_model: string | null;
+}
 export const providerInfo = () => invoke<ProviderInfo[]>("provider_info");
 
 export type StreamEvent =
   | { kind: "delta"; text: string }
+  | { kind: "source"; title: string; url: string }
   | { kind: "done" }
   | { kind: "error"; message: string };
 
@@ -92,23 +110,30 @@ export async function keyStatus(): Promise<Record<Provider, boolean>> {
 /** Starts a streaming translation. Events from a superseded run must be ignored by the caller. */
 export function runTranslation(
   input: { text: string; media: Media | null },
+  task: Task,
   tutor: boolean,
   onEvent: (e: StreamEvent) => void,
   provider: Provider | null = null,
 ) {
   const channel = new Channel<StreamEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>("run_translation", { input, tutor, provider, onEvent: channel });
+  return invoke<void>("run_translation", { input, task, tutor, provider, onEvent: channel });
 }
 
 export const dataUrl = (m: Media) => `data:${m.mime};base64,${m.data_b64}`;
+
+export interface LiveOption { provider: Provider; audio: boolean; screen: boolean }
 
 export interface LiveInfo {
   running: boolean;
   sources: LiveSource[];
   tutor: boolean;
-  model: string;
-  model_ok: boolean;
+  /** The running session's provider and model. */
+  label: string | null;
+  /** Chosen in the caption bar; null means automatic. */
+  chosen: Provider | null;
+  /** Providers with a key, and what they can do in Live. */
+  options: LiveOption[];
   system_audio: boolean;
   /** What the screen source watches, if one was picked. */
   screen: string | null;
@@ -127,3 +152,16 @@ export const liveStop = () => invoke<void>("live_stop");
 export const openLive = () => invoke<void>("open_live");
 export const closeLive = () => invoke<void>("close_live");
 export const livePickScreen = () => invoke<void>("live_pick_screen");
+export const liveSetProvider = (provider: Provider | null) => invoke<void>("live_set_provider", { provider });
+
+/** Opens a web search for `query` in the default browser. */
+export async function searchWeb(query: string) {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(`https://www.google.com/search?q=${encodeURIComponent(query)}`);
+}
+
+export async function openLink(url: string) {
+  if (!/^https?:\/\//.test(url)) return;
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
+}

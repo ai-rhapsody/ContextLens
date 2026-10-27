@@ -7,8 +7,18 @@ import { TextField } from "./TextField";
 
 type Note = { kind: "ok" | "err"; text: string } | null;
 
+/** Providers with a real-time API, and which setting holds its model. */
+const LIVE_FIELD: Partial<Record<Provider, "gemini_live" | "openai_realtime">> = {
+  gemini: "gemini_live",
+  openai: "openai_realtime",
+};
+const LIVE_HINT: Partial<Record<Provider, string>> = {
+  gemini: "例如 gemini-live-2.5-flash-preview",
+  openai: "例如 gpt-realtime",
+};
+
 function ProviderRow(props: {
-  id: Provider; name: string; vendor: string; settings: Settings; hasKey: boolean; caps?: Caps;
+  id: Provider; name: string; vendor: string; settings: Settings; hasKey: boolean; caps?: Caps; web?: boolean;
   commit: (s: Settings) => void; refresh: () => void;
 }) {
   const { id, settings, hasKey } = props;
@@ -43,9 +53,20 @@ function ProviderRow(props: {
           onCommit={(v) => v && props.commit({ ...settings, models: { ...settings.models, [id]: v } })}
         />
       </div>
+      {LIVE_FIELD[id] && (
+        <div className="provider-line">
+          <span className="muted" style={{ width: 40 }} title="Live 即時翻譯用的模型">即時</span>
+          <TextField
+            value={settings.models[LIVE_FIELD[id]!]} ariaLabel={`${props.name} 即時模型`}
+            placeholder={LIVE_HINT[id]}
+            onCommit={(v) => v && props.commit({ ...settings, models: { ...settings.models, [LIVE_FIELD[id]!]: v } })}
+          />
+        </div>
+      )}
       <div className="provider-line">
         <span className="muted" style={{ width: 40 }}>能力</span>
         <CapsRow caps={props.caps} />
+        {props.web && <span className="cap on" title="搜尋動作可以上網查資料">可上網</span>}
       </div>
       <div className="provider-line">
         <span className="muted" style={{ width: 40 }}>金鑰</span>
@@ -81,7 +102,7 @@ function ProviderRow(props: {
 }
 
 export function ModelsPage({ settings, commit }: { settings: Settings; commit: (s: Settings) => void }) {
-  const [info, setInfo] = useState<Record<Provider, { has_key: boolean; caps: Caps }> | null>(null);
+  const [info, setInfo] = useState<Record<Provider, { has_key: boolean; caps: Caps; web: boolean }> | null>(null);
   const refresh = () => {
     providerInfo().then((rows) => setInfo(Object.fromEntries(rows.map((r) => [r.provider, r])) as never));
   };
@@ -93,12 +114,14 @@ export function ModelsPage({ settings, commit }: { settings: Settings; commit: (
       <h1>模型與金鑰</h1>
       <p className="lede">
         選一個預設服務，貼上你自己的 API 金鑰。金鑰存在系統鑰匙圈，不會寫進設定檔。
-        「能力」依模型名稱判斷；預設服務讀不了的內容，翻譯視窗會讓你改用其他有金鑰的服務。
+        「能力」依模型名稱判斷；預設服務做不到的事，會讓你改用其他有金鑰的服務。
+        Live 聽聲音需要 Gemini 或 ChatGPT 的「即時」模型；只看螢幕時，任何能讀圖片的模型都可以。
       </p>
       <div className="panel">
         {PROVIDERS.map((p) => (
           <ProviderRow
             key={p.id} {...p} settings={settings} hasKey={info?.[p.id]?.has_key ?? false} caps={info?.[p.id]?.caps}
+            web={info?.[p.id]?.web}
             commit={commit} refresh={refresh}
           />
         ))}

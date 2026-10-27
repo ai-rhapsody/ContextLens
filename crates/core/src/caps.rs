@@ -52,6 +52,16 @@ pub fn for_model(provider: Provider, model: &str) -> Caps {
     }
 }
 
+/// Whether `model` is a real-time model of `provider` (Gemini Live, OpenAI Realtime).
+pub fn is_live_model(provider: Provider, model: &str) -> bool {
+    let m = model.trim().to_lowercase();
+    match provider {
+        Provider::Gemini => m.contains("live") || m.contains("native-audio"),
+        Provider::OpenAi => m.contains("realtime"),
+        Provider::Anthropic => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +83,13 @@ mod tests {
         assert!(for_model(Provider::Anthropic, "claude-haiku-5-5").image);
         assert!(!for_model(Provider::Anthropic, "claude-2.1").image);
         assert!(!for_model(Provider::Anthropic, "claude-haiku-5-5").live);
+    }
+
+    #[test]
+    fn live_models_by_provider() {
+        assert!(is_live_model(Provider::Gemini, "gemini-3.8-live"));
+        assert!(is_live_model(Provider::OpenAi, "gpt-realtime"));
+        assert!(!is_live_model(Provider::OpenAi, "gpt-5-mini"));
+        assert!(!is_live_model(Provider::Anthropic, "claude-live"));
     }
 }

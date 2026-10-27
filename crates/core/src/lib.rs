@@ -13,9 +13,9 @@ pub mod sse;
 pub use caps::Caps;
 pub use history::{History, HistoryEntry};
 pub use media::{Media, MediaKind};
-pub use provider::{stream_completion, ChatRequest, ProviderError};
+pub use provider::{can_search, stream_completion, ChatRequest, Delta, ProviderError};
 pub use reqwest;
-pub use settings::{Hotkey, Provider, Settings, Source};
+pub use settings::{Hotkey, Provider, Settings, Source, Task};
 
 /// One shared HTTP client. No total timeout, because streams can run long;
 /// instead a stalled connection fails after 90 s without data (video can take a while).

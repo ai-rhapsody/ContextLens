@@ -1,10 +1,11 @@
-//! Live sessions: capture audio, mix it, stream it to Gemini Live, and relay what comes back
-//! to the caption window. Capture runs on plain threads (audio streams cannot move between
-//! threads on every platform); the WebSocket session runs on the async runtime.
+//! Live sessions: capture audio and the screen, stream them to a real-time API (Gemini Live or
+//! OpenAI Realtime) or, for the screen alone, to a regular vision model, and relay what comes
+//! back to the caption window. Capture runs on plain threads (audio streams cannot move between
+//! threads on every platform); the network side runs on the async runtime.
 
 use crate::{imaging, store, AppState};
-use contextlens_core::live::{self, LiveConfig, Resampler, ScreenMode, ServerEvent};
-use contextlens_core::{HistoryEntry, Provider};
+use contextlens_core::live::{self, Backend, LiveConfig, Resampler, ScreenMode, ServerEvent};
+use contextlens_core::{ChatRequest, Delta, HistoryEntry, Media, Provider};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use std::sync::{mpsc as std_mpsc, Arc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -83,6 +84,8 @@ pub struct LiveHandle {
     capture_stop: Arc<AtomicBool>,
     pub sources: Vec<LiveSource>,
     pub tutor: bool,
+    /// "Gemini · gemini-live-…", shown in the caption bar.
+    pub label: String,
 }
 
 impl LiveHandle {
@@ -92,12 +95,36 @@ impl LiveHandle {
     }
 }
 
+/// Where a session's content goes.
+pub enum Engine {
+    /// A real-time API, needed for audio.
+    Realtime { backend: Backend, model: String, api_key: String },
+    /// Screen only: each settled screen goes to a regular vision model. Works with any provider
+    /// whose model reads images, and costs only when the screen changes.
+    Reader { provider: Provider, model: String, api_key: String },
+}
+
+impl Engine {
+    fn provider(&self) -> Provider {
+        match self {
+            Engine::Realtime { backend: Backend::GeminiLive, .. } => Provider::Gemini,
+            Engine::Realtime { backend: Backend::OpenAiRealtime, .. } => Provider::OpenAi,
+            Engine::Reader { provider, .. } => *provider,
+        }
+    }
+
+    fn model(&self) -> &str {
+        match self {
+            Engine::Realtime { model, .. } | Engine::Reader { model, .. } => model,
+        }
+    }
+}
+
 pub struct StartArgs {
     pub sources: Vec<LiveSource>,
     pub tutor: bool,
-    pub model: String,
+    pub engine: Engine,
     pub target_language: String,
-    pub api_key: String,
     pub idle_minutes: u32,
     pub screen: Option<ScreenTarget>,
 }
@@ -112,10 +139,11 @@ fn status(app: &AppHandle, state: &'static str, message: Option<String>) {
 
 // ---------- capture ----------
 
-/// Builds an input stream that hands 16 kHz mono f32 chunks to `tx`, tagged with `idx`.
+/// Builds an input stream that hands mono f32 chunks at `rate` to `tx`, tagged with `idx`.
 fn build_stream(
     source: LiveSource,
     idx: usize,
+    rate: u32,
     tx: std_mpsc::Sender<(usize, Vec<f32>)>,
 ) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
@@ -136,7 +164,7 @@ fn build_stream(
         }
         LiveSource::Screen => return Err("螢幕不是聲音來源。".into()),
     };
-    let mut rs = Resampler::new(config.sample_rate(), config.channels());
+    let mut rs = Resampler::to_rate(config.sample_rate(), config.channels(), rate);
     let err_fn = |e| eprintln!("live capture: {e}");
     let mut send = move |samples: &[f32]| {
         let mut out = Vec::with_capacity(samples.len() / 2);
@@ -177,11 +205,12 @@ fn build_stream(
 fn spawn_capture(
     source: LiveSource,
     idx: usize,
+    rate: u32,
     tx: std_mpsc::Sender<(usize, Vec<f32>)>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let (ready_tx, ready_rx) = std_mpsc::channel();
-    std::thread::spawn(move || match build_stream(source, idx, tx) {
+    std::thread::spawn(move || match build_stream(source, idx, rate, tx) {
         Ok(stream) => {
             let _ = ready_tx.send(Ok(()));
             while !stop.load(Ordering::SeqCst) {
@@ -196,14 +225,14 @@ fn spawn_capture(
     ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "音訊裝置沒有回應。".to_string())?
 }
 
-/// 100 ms at 16 kHz.
-const CHUNK: usize = 1600;
+
 /// Below this loudness a chunk counts as silence.
 const SILENCE_RMS: f32 = 0.01;
 
 /// Sums the audio sources into 100 ms PCM chunks for the session and reports levels.
 fn spawn_mixer(
     sources: usize,
+    rate: u32,
     rx: std_mpsc::Receiver<(usize, Vec<f32>)>,
     out: mpsc::Sender<Outgoing>,
     stop: Arc<AtomicBool>,
@@ -211,6 +240,8 @@ fn spawn_mixer(
     epoch: Instant,
     app: AppHandle,
 ) {
+    // 100 ms per chunk.
+    let chunk = (rate / 10) as usize;
     std::thread::spawn(move || {
         let mut bufs: Vec<VecDeque<f32>> = vec![VecDeque::new(); sources];
         let mut last_level = Instant::now();
@@ -222,10 +253,10 @@ fn spawn_mixer(
             }
             // A source that plays nothing (loopback during silence) delivers no data at all,
             // so mix whenever any source has a full chunk.
-            while bufs.iter().any(|b| b.len() >= CHUNK) {
-                let mut mix = vec![0f32; CHUNK];
+            while bufs.iter().any(|b| b.len() >= chunk) {
+                let mut mix = vec![0f32; chunk];
                 for b in bufs.iter_mut() {
-                    let n = b.len().min(CHUNK);
+                    let n = b.len().min(chunk);
                     for (m, s) in mix.iter_mut().zip(b.drain(..n)) {
                         *m += s;
                     }
@@ -340,18 +371,31 @@ enum Outcome {
 }
 
 async fn session(
-    url: &str,
-    setup: serde_json::Value,
+    backend: Backend,
+    endpoint: (String, Vec<(&'static str, String)>),
+    opening: Vec<serde_json::Value>,
     outgoing: &mut mpsc::Receiver<Outgoing>,
     stop: &mut watch::Receiver<bool>,
     on: &mut (impl FnMut(ServerEvent) + Send),
 ) -> Outcome {
-    let (mut ws, _) = match tokio_tungstenite::connect_async(url).await {
-        Ok(c) => c,
-        Err(e) => return Outcome::Refused(format!("無法連線到 Gemini Live：{e}")),
+    let (url, headers) = endpoint;
+    let mut request = match url.as_str().into_client_request() {
+        Ok(r) => r,
+        Err(e) => return Outcome::Refused(e.to_string()),
     };
-    if let Err(e) = ws.send(Message::text(setup.to_string())).await {
-        return Outcome::Refused(e.to_string());
+    for (k, v) in headers {
+        if let Ok(v) = v.parse() {
+            request.headers_mut().insert(k, v);
+        }
+    }
+    let (mut ws, _) = match tokio_tungstenite::connect_async(request).await {
+        Ok(c) => c,
+        Err(e) => return Outcome::Refused(format!("無法連線：{e}")),
+    };
+    for m in opening {
+        if let Err(e) = ws.send(Message::text(m.to_string())).await {
+            return Outcome::Refused(e.to_string());
+        }
     }
     let mut started = false;
     let setup_deadline = tokio::time::sleep(Duration::from_secs(15));
@@ -363,17 +407,19 @@ async fn session(
                 return Outcome::Stopped;
             }
             _ = &mut setup_deadline, if !started => {
-                return Outcome::Refused("Gemini Live 沒有回應。".into());
+                return Outcome::Refused("即時服務沒有回應。".into());
             }
             next = outgoing.recv(), if started => {
-                let msg = match next {
-                    Some(Outgoing::Audio(pcm)) => live::audio_message(&pcm),
-                    Some(Outgoing::Frame(jpeg)) => live::image_message(&jpeg),
-                    Some(Outgoing::Turn(text)) => live::text_turn_message(text),
+                let msgs = match next {
+                    Some(Outgoing::Audio(pcm)) => backend.audio(&pcm),
+                    Some(Outgoing::Frame(jpeg)) => backend.frame(&jpeg),
+                    Some(Outgoing::Turn(text)) => backend.turn(text),
                     None => return Outcome::Stopped,
                 };
-                if let Err(e) = ws.send(Message::text(msg.to_string())).await {
-                    return Outcome::Failed(e.to_string());
+                for m in msgs {
+                    if let Err(e) = ws.send(Message::text(m.to_string())).await {
+                        return Outcome::Failed(e.to_string());
+                    }
                 }
             }
             msg = ws.next() => {
@@ -395,7 +441,7 @@ async fn session(
                     Some(Err(e)) => return if started { Outcome::Reconnect } else { Outcome::Refused(e.to_string()) },
                     None => return if started { Outcome::Reconnect } else { Outcome::Refused("連線中斷。".into()) },
                 };
-                for ev in live::parse(&text) {
+                for ev in backend.parse(&text) {
                     match ev {
                         ServerEvent::SetupComplete => {
                             started = true;
@@ -408,6 +454,75 @@ async fn session(
                         ServerEvent::Error(m) => return if started { Outcome::Failed(m) } else { Outcome::Refused(m) },
                         other => on(other),
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Screen-only sessions: keeps the latest frame and, each time the screen settles, asks a
+/// regular vision model for the new text. Recent replies go back in, so it does not repeat itself.
+#[allow(clippy::too_many_arguments)]
+async fn reader(
+    app: &AppHandle,
+    provider: Provider,
+    model: &str,
+    api_key: &str,
+    target: &str,
+    tutor: bool,
+    outgoing: &mut mpsc::Receiver<Outgoing>,
+    stop: &mut watch::Receiver<bool>,
+    transcript: &mut Transcript,
+) {
+    let http = contextlens_core::http_client();
+    let mut frame: Option<String> = None;
+    let mut recent: VecDeque<String> = VecDeque::new();
+    status(app, "listening", None);
+    loop {
+        let next = tokio::select! {
+            _ = stop.changed() => return,
+            n = outgoing.recv() => n,
+        };
+        match next {
+            None => return,
+            Some(Outgoing::Frame(f)) => frame = Some(f),
+            Some(Outgoing::Audio(_)) => {}
+            Some(Outgoing::Turn(_)) => {
+                let Some(f) = frame.clone() else { continue };
+                let mut system = live::system_prompt(target, tutor, ScreenMode::Reader);
+                if !recent.is_empty() {
+                    let done: Vec<&str> = recent.iter().map(String::as_str).collect();
+                    system += &format!("\nYou already translated this; do not repeat it:\n{}", done.join("\n"));
+                }
+                let req = ChatRequest {
+                    system,
+                    user: "Here is the screen now. Translate only the new text.".into(),
+                    media: vec![Media { mime: "image/jpeg".into(), data_b64: f, name: None }],
+                    web_search: false,
+                };
+                let mut out = String::new();
+                let stopped = stop.clone();
+                let result = contextlens_core::stream_completion(&http, provider, model, api_key, &req, |d| {
+                    if let Delta::Text(t) = d {
+                        out.push_str(&t);
+                        emit(app, LiveUi::Output { text: t });
+                    }
+                    !*stopped.borrow()
+                })
+                .await;
+                match result {
+                    Ok(()) if !out.trim().is_empty() => {
+                        emit(app, LiveUi::TurnComplete);
+                        transcript.output = out.clone();
+                        transcript.end_turn();
+                        recent.push_back(out);
+                        if recent.len() > 4 {
+                            recent.pop_front();
+                        }
+                    }
+                    Ok(()) => {}
+                    // Keep watching: one failed request (rate limit, network) should not end the session.
+                    Err(e) => status(app, "listening", Some(format!("這次沒有翻譯成功：{e}"))),
                 }
             }
         }
@@ -433,7 +548,7 @@ impl Transcript {
     }
 }
 
-fn save(app: &AppHandle, model: &str, tutor: bool, mut t: Transcript) {
+fn save(app: &AppHandle, provider: Provider, model: &str, tutor: bool, mut t: Transcript) {
     t.end_turn();
     if t.turns.is_empty() {
         return;
@@ -452,8 +567,9 @@ fn save(app: &AppHandle, model: &str, tutor: bool, mut t: Transcript) {
         thumb: None,
         result: format!("## 原文\n{original}\n## 翻譯\n{translation}\n"),
         tutor,
-        provider: Provider::Gemini,
+        provider,
         model: model.into(),
+        sources: vec![],
     };
     let mut h = state.history.lock().unwrap();
     h.push(entry);
@@ -475,14 +591,19 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
     };
 
     let audio: Vec<LiveSource> = args.sources.iter().copied().filter(|s| s.is_audio()).collect();
+    let rate = match &args.engine {
+        Engine::Realtime { backend, .. } => backend.sample_rate(),
+        Engine::Reader { .. } if !audio.is_empty() => return fail("聲音需要即時模型。".into()),
+        Engine::Reader { .. } => live::SAMPLE_RATE,
+    };
     for (i, s) in audio.iter().enumerate() {
-        if let Err(e) = spawn_capture(*s, i, cap_tx.clone(), capture_stop.clone()) {
+        if let Err(e) = spawn_capture(*s, i, rate, cap_tx.clone(), capture_stop.clone()) {
             return fail(e);
         }
     }
     drop(cap_tx);
     if !audio.is_empty() {
-        spawn_mixer(audio.len(), cap_rx, out_tx.clone(), capture_stop.clone(), activity.clone(), epoch, app.clone());
+        spawn_mixer(audio.len(), rate, cap_rx, out_tx.clone(), capture_stop.clone(), activity.clone(), epoch, app.clone());
     }
 
     let screen_mode = match (args.sources.contains(&LiveSource::Screen), audio.is_empty()) {
@@ -519,75 +640,92 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
         capture_stop: capture_stop.clone(),
         sources: args.sources.clone(),
         tutor: args.tutor,
+        label: format!("{} · {}", args.engine.provider().display_name(), args.engine.model()),
     };
 
     tauri::async_runtime::spawn(async move {
-        let url = live::url(&args.api_key);
-        let mut resume: Option<String> = None;
-        let mut text_output = true;
         let mut transcript = Transcript::default();
-        let mut reconnects = 0u32;
         status(&app, "connecting", None);
-        loop {
-            let setup = live::setup_message(&LiveConfig {
-                model: &args.model,
-                target_language: &args.target_language,
-                tutor: args.tutor,
-                text_output,
-                resume_handle: resume.as_deref(),
-                screen: screen_mode,
-            });
-            let mut announced = false;
-            let ui = app.clone();
-            let mut on = |ev: ServerEvent| match ev {
-                ServerEvent::SetupComplete => {
-                    if !announced {
-                        announced = true;
-                        status(&ui, "listening", None);
+        match &args.engine {
+            Engine::Reader { provider, model, api_key } => {
+                reader(&app, *provider, model, api_key, &args.target_language, args.tutor,
+                       &mut out_rx, &mut stop_rx, &mut transcript).await;
+            }
+            Engine::Realtime { backend, model, api_key } => {
+                let backend = *backend;
+                let mut resume: Option<String> = None;
+                let mut text_output = true;
+                let mut reconnects = 0u32;
+                loop {
+                    let opening = backend.opening(&LiveConfig {
+                        model,
+                        target_language: &args.target_language,
+                        tutor: args.tutor,
+                        text_output,
+                        resume_handle: resume.as_deref(),
+                        screen: screen_mode,
+                    });
+                    let mut announced = false;
+                    let ui = app.clone();
+                    let mut on = |ev: ServerEvent| match ev {
+                        ServerEvent::SetupComplete => {
+                            if !announced {
+                                announced = true;
+                                status(&ui, "listening", None);
+                            }
+                        }
+                        ServerEvent::Input(t) => {
+                            // Gemini transcribes the next speech as it comes, so new input after a
+                            // finished reply starts a new turn. OpenAI sends each transcript whole,
+                            // sometimes after the reply has begun, so it belongs to the current turn.
+                            if backend == Backend::GeminiLive && !transcript.output.is_empty() {
+                                transcript.end_turn();
+                                emit(&ui, LiveUi::TurnComplete);
+                            }
+                            transcript.input.push_str(&t);
+                            emit(&ui, LiveUi::Input { text: t });
+                        }
+                        ServerEvent::Output(t) => {
+                            transcript.output.push_str(&t);
+                            emit(&ui, LiveUi::Output { text: t });
+                        }
+                        ServerEvent::TurnComplete => {
+                            transcript.end_turn();
+                            emit(&ui, LiveUi::TurnComplete);
+                        }
+                        ServerEvent::ResumeHandle(h) => resume = Some(h),
+                        ServerEvent::GoAway | ServerEvent::Error(_) => {}
+                    };
+                    let endpoint = backend.endpoint(api_key, model);
+                    match session(backend, endpoint, opening, &mut out_rx, &mut stop_rx, &mut on).await {
+                        Outcome::Stopped => break,
+                        Outcome::Reconnect if reconnects < 20 => {
+                            reconnects += 1;
+                            if !backend.resumable() {
+                                resume = None;
+                            }
+                            status(&app, "reconnecting", None);
+                        }
+                        Outcome::Refused(r)
+                            if backend == Backend::GeminiLive && text_output && live::is_modality_error(&r) =>
+                        {
+                            // This model only speaks; ask for audio and read its transcription.
+                            text_output = false;
+                        }
+                        Outcome::Refused(r) | Outcome::Failed(r) => {
+                            status(&app, "error", Some(r));
+                            break;
+                        }
+                        Outcome::Reconnect => {
+                            status(&app, "error", Some("連線一直中斷，已停止。".into()));
+                            break;
+                        }
                     }
-                }
-                ServerEvent::Input(t) => {
-                    // New speech after a finished reply starts a new turn.
-                    if !transcript.output.is_empty() {
-                        transcript.end_turn();
-                        emit(&ui, LiveUi::TurnComplete);
-                    }
-                    transcript.input.push_str(&t);
-                    emit(&ui, LiveUi::Input { text: t });
-                }
-                ServerEvent::Output(t) => {
-                    transcript.output.push_str(&t);
-                    emit(&ui, LiveUi::Output { text: t });
-                }
-                ServerEvent::TurnComplete => {
-                    transcript.end_turn();
-                    emit(&ui, LiveUi::TurnComplete);
-                }
-                ServerEvent::ResumeHandle(h) => resume = Some(h),
-                ServerEvent::GoAway | ServerEvent::Error(_) => {}
-            };
-            match session(&url, setup, &mut out_rx, &mut stop_rx, &mut on).await {
-                Outcome::Stopped => break,
-                Outcome::Reconnect if reconnects < 20 => {
-                    reconnects += 1;
-                    status(&app, "reconnecting", None);
-                }
-                Outcome::Refused(r) if text_output && live::is_modality_error(&r) => {
-                    // This model only speaks; ask for audio and read its transcription.
-                    text_output = false;
-                }
-                Outcome::Refused(r) | Outcome::Failed(r) => {
-                    status(&app, "error", Some(r));
-                    break;
-                }
-                Outcome::Reconnect => {
-                    status(&app, "error", Some("連線一直中斷，已停止。".into()));
-                    break;
                 }
             }
         }
         capture_stop.store(true, Ordering::SeqCst);
-        save(&app, &args.model, args.tutor, transcript);
+        save(&app, args.engine.provider(), args.engine.model(), args.tutor, transcript);
         let state = app.state::<AppState>();
         let mut current = state.live.lock().unwrap();
         // A restart (new sources) may already have put a newer session in the slot.
@@ -648,7 +786,7 @@ mod tests {
             }
             events.push(e);
         };
-        let run = session(&url, setup(), &mut rx, &mut stop, &mut on);
+        let run = session(Backend::GeminiLive, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
         assert!(matches!(tokio::time::timeout(Duration::from_secs(5), run).await.unwrap(), Outcome::Stopped));
         drop(on);
         assert!(events.contains(&ServerEvent::Input("hello".into())));
@@ -661,7 +799,7 @@ mod tests {
         let (_tx, mut rx) = mpsc::channel::<Outgoing>(1);
         let (_stop_tx, mut stop) = watch::channel(false);
         let mut on = |_: ServerEvent| {};
-        let run = session(&url, setup(), &mut rx, &mut stop, &mut on);
+        let run = session(Backend::GeminiLive, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
         match tokio::time::timeout(Duration::from_secs(5), run).await.unwrap() {
             Outcome::Refused(r) => assert!(r.contains("API key")),
             _ => panic!("expected a refusal"),

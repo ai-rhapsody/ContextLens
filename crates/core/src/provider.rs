@@ -10,6 +10,25 @@ pub struct ChatRequest {
     pub user: String,
     /// Images, audio or video sent with the user turn.
     pub media: Vec<Media>,
+    /// Let the model search the web (Gemini: Google Search; Claude: web search;
+    /// OpenAI: only its search models).
+    pub web_search: bool,
+}
+
+/// One piece of a streamed answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Delta {
+    Text(String),
+    /// A web page the answer drew on.
+    Source { title: String, url: String },
+}
+
+/// Whether a model can search the web through its provider's API.
+pub fn can_search(provider: Provider, model: &str) -> bool {
+    match provider {
+        Provider::Gemini | Provider::Anthropic => true,
+        Provider::OpenAi => model.contains("search"),
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -38,42 +57,60 @@ pub struct HttpPlan {
 
 pub fn plan(provider: Provider, model: &str, api_key: &str, req: &ChatRequest) -> HttpPlan {
     match provider {
-        Provider::OpenAi => HttpPlan {
-            url: "https://api.openai.com/v1/chat/completions".into(),
-            headers: vec![("authorization", format!("Bearer {api_key}"))],
-            body: json!({
+        Provider::OpenAi => {
+            let mut body = json!({
                 "model": model,
                 "stream": true,
                 "messages": [
                     { "role": "system", "content": req.system },
                     { "role": "user", "content": openai_content(req) },
                 ],
-            }),
-        },
-        Provider::Anthropic => HttpPlan {
-            url: "https://api.anthropic.com/v1/messages".into(),
-            headers: vec![
-                ("x-api-key", api_key.to_string()),
-                ("anthropic-version", "2023-06-01".into()),
-            ],
-            body: json!({
+            });
+            if req.web_search && can_search(provider, model) {
+                body["web_search_options"] = json!({});
+            }
+            HttpPlan {
+                url: "https://api.openai.com/v1/chat/completions".into(),
+                headers: vec![("authorization", format!("Bearer {api_key}"))],
+                body,
+            }
+        }
+        Provider::Anthropic => {
+            let mut body = json!({
                 "model": model,
                 "stream": true,
                 "max_tokens": 4096,
                 "system": req.system,
                 "messages": [{ "role": "user", "content": anthropic_content(req) }],
-            }),
-        },
-        Provider::Gemini => HttpPlan {
-            url: format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
-            ),
-            headers: vec![("x-goog-api-key", api_key.to_string())],
-            body: json!({
+            });
+            if req.web_search {
+                body["tools"] = json!([{ "type": "web_search_20250305", "name": "web_search", "max_uses": 3 }]);
+            }
+            HttpPlan {
+                url: "https://api.anthropic.com/v1/messages".into(),
+                headers: vec![
+                    ("x-api-key", api_key.to_string()),
+                    ("anthropic-version", "2023-06-01".into()),
+                ],
+                body,
+            }
+        }
+        Provider::Gemini => {
+            let mut body = json!({
                 "systemInstruction": { "parts": [{ "text": req.system }] },
                 "contents": [{ "role": "user", "parts": gemini_parts(req) }],
-            }),
-        },
+            });
+            if req.web_search {
+                body["tools"] = json!([{ "google_search": {} }]);
+            }
+            HttpPlan {
+                url: format!(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+                ),
+                headers: vec![("x-goog-api-key", api_key.to_string())],
+                body,
+            }
+        }
     }
 }
 
@@ -113,38 +150,61 @@ fn gemini_parts(req: &ChatRequest) -> Value {
     Value::Array(parts)
 }
 
-/// Reads one SSE `data:` payload and returns the text it adds, if any.
-pub fn extract_delta(provider: Provider, data: &str) -> Result<Option<String>, ProviderError> {
+fn source(title: Option<&str>, url: Option<&str>) -> Option<Delta> {
+    let url = url?.to_string();
+    let title = title.filter(|t| !t.is_empty()).map_or_else(|| url.clone(), String::from);
+    Some(Delta::Source { title, url })
+}
+
+/// Reads one SSE `data:` payload and returns what it adds: text, and the sources of a web search.
+pub fn extract_delta(provider: Provider, data: &str) -> Result<Vec<Delta>, ProviderError> {
     if data.trim() == "[DONE]" {
-        return Ok(None);
+        return Ok(vec![]);
     }
     let v: Value = match serde_json::from_str(data) {
         Ok(v) => v,
-        Err(_) => return Ok(None), // keep-alives and other non-JSON lines
+        Err(_) => return Ok(vec![]), // keep-alives and other non-JSON lines
     };
+    let mut out = Vec::new();
     match provider {
         Provider::OpenAi => {
             if let Some(msg) = v.pointer("/error/message").and_then(Value::as_str) {
                 return Err(ProviderError::Stream(msg.into()));
             }
-            Ok(v.pointer("/choices/0/delta/content")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(String::from))
+            let delta = v.pointer("/choices/0/delta");
+            if let Some(t) = delta.and_then(|d| d.get("content")).and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                out.push(Delta::Text(t.into()));
+            }
+            for a in delta.and_then(|d| d.get("annotations")).and_then(Value::as_array).into_iter().flatten() {
+                let c = a.get("url_citation");
+                out.extend(source(
+                    c.and_then(|c| c.get("title")).and_then(Value::as_str),
+                    c.and_then(|c| c.get("url")).and_then(Value::as_str),
+                ));
+            }
         }
         Provider::Anthropic => match v.get("type").and_then(Value::as_str) {
             Some("content_block_delta")
                 if v.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") =>
             {
-                Ok(v.pointer("/delta/text").and_then(Value::as_str).map(String::from))
+                out.extend(v.pointer("/delta/text").and_then(Value::as_str).map(|t| Delta::Text(t.into())));
             }
-            Some("error") => Err(ProviderError::Stream(
-                v.pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Anthropic 串流錯誤")
-                    .into(),
-            )),
-            _ => Ok(None),
+            Some("content_block_start")
+                if v.pointer("/content_block/type").and_then(Value::as_str) == Some("web_search_tool_result") =>
+            {
+                for r in v.pointer("/content_block/content").and_then(Value::as_array).into_iter().flatten() {
+                    out.extend(source(
+                        r.get("title").and_then(Value::as_str),
+                        r.get("url").and_then(Value::as_str),
+                    ));
+                }
+            }
+            Some("error") => {
+                return Err(ProviderError::Stream(
+                    v.pointer("/error/message").and_then(Value::as_str).unwrap_or("Anthropic 串流錯誤").into(),
+                ))
+            }
+            _ => {}
         },
         Provider::Gemini => {
             if let Some(msg) = v.pointer("/error/message").and_then(Value::as_str) {
@@ -164,9 +224,20 @@ pub fn extract_delta(provider: Provider, data: &str) -> Result<Option<String>, P
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok((!text.is_empty()).then_some(text))
+            if !text.is_empty() {
+                out.push(Delta::Text(text));
+            }
+            let chunks = v.pointer("/candidates/0/groundingMetadata/groundingChunks").and_then(Value::as_array);
+            for c in chunks.into_iter().flatten() {
+                let web = c.get("web");
+                out.extend(source(
+                    web.and_then(|w| w.get("title")).and_then(Value::as_str),
+                    web.and_then(|w| w.get("uri")).and_then(Value::as_str),
+                ));
+            }
         }
     }
+    Ok(out)
 }
 
 fn api_error_message(body: &str) -> String {
@@ -180,7 +251,7 @@ fn api_error_message(body: &str) -> String {
         .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
-/// Streams a completion, calling `on_delta` with each piece of text.
+/// Streams a completion, calling `on_delta` with each piece of text or source.
 /// Returning `false` from `on_delta` stops the stream early (a newer request replaced this one).
 pub async fn stream_completion(
     client: &reqwest::Client,
@@ -188,7 +259,7 @@ pub async fn stream_completion(
     model: &str,
     api_key: &str,
     req: &ChatRequest,
-    on_delta: impl FnMut(&str) -> bool,
+    on_delta: impl FnMut(Delta) -> bool,
 ) -> Result<(), ProviderError> {
     for m in &req.media {
         media::check(provider, model, m).map_err(ProviderError::Unsupported)?;
@@ -200,7 +271,7 @@ pub async fn run_plan(
     client: &reqwest::Client,
     provider: Provider,
     plan: HttpPlan,
-    mut on_delta: impl FnMut(&str) -> bool,
+    mut on_delta: impl FnMut(Delta) -> bool,
 ) -> Result<(), ProviderError> {
     let mut rb = client.post(&plan.url).json(&plan.body);
     for (k, v) in &plan.headers {
@@ -221,8 +292,8 @@ pub async fn run_plan(
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         for data in decoder.push(&chunk?) {
-            if let Some(text) = extract_delta(provider, &data)? {
-                if !on_delta(&text) {
+            for d in extract_delta(provider, &data)? {
+                if !on_delta(d) {
                     return Ok(());
                 }
             }
@@ -237,7 +308,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn req() -> ChatRequest {
-        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![] }
+        ChatRequest { system: "sys".into(), user: "usr".into(), media: vec![], web_search: false }
     }
 
     fn req_with_image() -> ChatRequest {
@@ -303,21 +374,61 @@ mod tests {
         assert!(matches!(err, ProviderError::Unsupported(_)));
     }
 
+    /// The text of one payload, as the old single-text API returned it.
+    fn text(provider: Provider, data: &str) -> Option<String> {
+        let t: String = extract_delta(provider, data)
+            .unwrap()
+            .into_iter()
+            .filter_map(|d| match d {
+                Delta::Text(t) => Some(t),
+                Delta::Source { .. } => None,
+            })
+            .collect();
+        (!t.is_empty()).then_some(t)
+    }
+
+    #[test]
+    fn web_search_adds_each_providers_tool() {
+        let r = ChatRequest { web_search: true, ..req() };
+        let g = plan(Provider::Gemini, "m", "K", &r).body;
+        assert!(g["tools"][0]["google_search"].is_object());
+        let a = plan(Provider::Anthropic, "m", "K", &r).body;
+        assert_eq!(a["tools"][0]["type"], "web_search_20250305");
+        // Only OpenAI's search models take the option; others would reject it.
+        assert!(plan(Provider::OpenAi, "gpt-5-mini", "K", &r).body.get("web_search_options").is_none());
+        assert!(plan(Provider::OpenAi, "gpt-4o-search-preview", "K", &r).body["web_search_options"].is_object());
+        assert!(plan(Provider::Gemini, "m", "K", &req()).body.get("tools").is_none());
+        assert!(can_search(Provider::Anthropic, "x") && !can_search(Provider::OpenAi, "gpt-5-mini"));
+    }
+
+    #[test]
+    fn sources_are_read_from_each_provider() {
+        let g = r#"{"candidates":[{"content":{"parts":[{"text":"答"}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://a.example","title":"A"}}]}}]}"#;
+        assert_eq!(
+            extract_delta(Provider::Gemini, g).unwrap(),
+            vec![Delta::Text("答".into()), Delta::Source { title: "A".into(), url: "https://a.example".into() }]
+        );
+        let a = r#"{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://b.example","title":"B"}]}}"#;
+        assert_eq!(extract_delta(Provider::Anthropic, a).unwrap(), vec![Delta::Source { title: "B".into(), url: "https://b.example".into() }]);
+        let o = r#"{"choices":[{"delta":{"annotations":[{"type":"url_citation","url_citation":{"url":"https://c.example","title":""}}]}}]}"#;
+        assert_eq!(extract_delta(Provider::OpenAi, o).unwrap(), vec![Delta::Source { title: "https://c.example".into(), url: "https://c.example".into() }]);
+    }
+
     #[test]
     fn openai_deltas() {
         let d = r#"{"choices":[{"delta":{"content":"你好"}}]}"#;
-        assert_eq!(extract_delta(Provider::OpenAi, d).unwrap().as_deref(), Some("你好"));
-        assert_eq!(extract_delta(Provider::OpenAi, "[DONE]").unwrap(), None);
+        assert_eq!(text(Provider::OpenAi, d).as_deref(), Some("你好"));
+        assert!(extract_delta(Provider::OpenAi, "[DONE]").unwrap().is_empty());
         let role_only = r#"{"choices":[{"delta":{"role":"assistant"}}]}"#;
-        assert_eq!(extract_delta(Provider::OpenAi, role_only).unwrap(), None);
+        assert!(extract_delta(Provider::OpenAi, role_only).unwrap().is_empty());
     }
 
     #[test]
     fn anthropic_deltas_and_errors() {
         let d = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#;
-        assert_eq!(extract_delta(Provider::Anthropic, d).unwrap().as_deref(), Some("Hi"));
+        assert_eq!(text(Provider::Anthropic, d).as_deref(), Some("Hi"));
         let ping = r#"{"type":"ping"}"#;
-        assert_eq!(extract_delta(Provider::Anthropic, ping).unwrap(), None);
+        assert!(extract_delta(Provider::Anthropic, ping).unwrap().is_empty());
         let err = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
         assert!(extract_delta(Provider::Anthropic, err).is_err());
     }
@@ -325,7 +436,7 @@ mod tests {
     #[test]
     fn gemini_deltas_skip_thoughts_and_report_blocks() {
         let d = r#"{"candidates":[{"content":{"parts":[{"text":"想","thought":true},{"text":"答"},{"text":"案"}]}}]}"#;
-        assert_eq!(extract_delta(Provider::Gemini, d).unwrap().as_deref(), Some("答案"));
+        assert_eq!(text(Provider::Gemini, d).as_deref(), Some("答案"));
         let blocked = r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#;
         assert!(extract_delta(Provider::Gemini, blocked).is_err());
     }
@@ -364,8 +475,10 @@ mod tests {
                     data: [DONE]\n\n";
         let url = serve_once("200 OK", body, "text/event-stream").await;
         let mut got = String::new();
-        run_plan(&reqwest::Client::new(), Provider::OpenAi, local_plan(url), |t| {
-            got.push_str(t);
+        run_plan(&reqwest::Client::new(), Provider::OpenAi, local_plan(url), |d| {
+            if let Delta::Text(t) = d {
+                got.push_str(&t);
+            }
             true
         })
         .await
@@ -379,8 +492,10 @@ mod tests {
                     data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n";
         let url = serve_once("200 OK", body, "text/event-stream").await;
         let mut got = String::new();
-        run_plan(&reqwest::Client::new(), Provider::OpenAi, local_plan(url), |t| {
-            got.push_str(t);
+        run_plan(&reqwest::Client::new(), Provider::OpenAi, local_plan(url), |d| {
+            if let Delta::Text(t) = d {
+                got.push_str(&t);
+            }
             false
         })
         .await

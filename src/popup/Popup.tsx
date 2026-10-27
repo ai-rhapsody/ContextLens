@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  dataUrl, getSettings, hidePopup, providerInfo, PROVIDERS, runTranslation, setPopupPinned, showSettings,
-  takePendingCapture, type Media, type Provider, type ProviderInfo, type Settings,
+  dataUrl, getSettings, hidePopup, openLink, providerInfo, PROVIDERS, runTranslation, searchWeb, setPopupPinned,
+  showSettings, takePendingCapture, TASKS, type Media, type Provider, type ProviderInfo, type Settings, type Task,
 } from "../lib/api";
 import { fileToMedia, KIND_LABEL, kindOf } from "../lib/files";
 import { parseSections } from "../lib/sections";
@@ -18,10 +18,25 @@ type Blocked = { kind: "image" | "audio" | "video"; model: string; alternatives:
 /** Wait this long without a token before showing the skeleton, so fast answers never flash it. */
 const SKELETON_DELAY_MS = 250;
 
+/** The section each task leads with, and the one "copy" takes. */
+const LEAD: Record<Task, string> = { translate: "翻譯", explain: "說明", search: "這是什麼" };
+const QUERIES = "搜尋關鍵字";
+const MUTED = new Set(["原文", "內容"]);
+
+function host(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 export function Popup() {
   const [input, setInput] = useState<Input | null>(null);
   const [result, setResult] = useState("");
   const [tutor, setTutor] = useState(false);
+  const [task, setTask] = useState<Task>("translate");
+  const [sources, setSources] = useState<{ title: string; url: string }[]>([]);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
@@ -49,10 +64,11 @@ export function Popup() {
     setNeedsKey(message.includes("API 金鑰"));
   }, []);
 
-  const start = useCallback((next: Input, asTutor: boolean, via: Provider | null = null) => {
+  const start = useCallback((next: Input, asTask: Task, asTutor: boolean, via: Provider | null = null) => {
     const id = ++run.current;
     setInput(next);
     setResult("");
+    setSources([]);
     setError(null);
     setNeedsKey(false);
     setOverride(via);
@@ -76,9 +92,10 @@ export function Popup() {
     setExpanded(false);
     setStartedAt(Date.now());
     setShowSkeleton(false);
-    runTranslation(next, asTutor, (e) => {
+    runTranslation(next, asTask, asTutor, (e) => {
       if (id !== run.current) return;
       if (e.kind === "delta") setResult((r) => r + e.text);
+      else if (e.kind === "source") setSources((s) => [...s, { title: e.title, url: e.url }]);
       else if (e.kind === "done") setStatus("done");
       else fail(e.message);
     }, via).catch((err) => id === run.current && fail(String(err)));
@@ -92,6 +109,7 @@ export function Popup() {
     if (!cap) return;
     setKept(false); // a fresh capture is a fresh peek
     setTutor(cap.tutor);
+    setTask(cap.task);
     if (cap.error) {
       setInput(null);
       setResult("");
@@ -106,7 +124,7 @@ export function Popup() {
       setKept(true);
       return;
     }
-    start({ text: cap.text, media: cap.media }, cap.tutor);
+    start({ text: cap.text, media: cap.media }, cap.task, cap.tutor);
   }, [start, fail]);
 
   useEffect(() => {
@@ -139,12 +157,12 @@ export function Popup() {
     if (!file) return;
     setKept(true);
     try {
-      start({ text: "", media: await fileToMedia(file) }, tutor);
+      start({ text: "", media: await fileToMedia(file) }, task, tutor);
     } catch (e) {
       setInput(null);
       fail(e instanceof Error ? e.message : String(e));
     }
-  }, [start, fail, tutor]);
+  }, [start, fail, task, tutor]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -162,7 +180,14 @@ export function Popup() {
     const next = !tutor;
     setTutor(next);
     setKept(true);
-    if (input) start(input, next, override);
+    if (input) start(input, task, next, override);
+  };
+
+  const switchTask = (next: Task) => {
+    if (next === task) return;
+    setTask(next);
+    setKept(true);
+    if (input) start(input, next, tutor, override);
   };
 
   const togglePin = () => {
@@ -173,10 +198,13 @@ export function Popup() {
 
   const sections = useMemo(() => parseSections(result), [result]);
   const hasHeadings = sections.some((s) => s.title);
-  const translation = sections.find((s) => s.title === "翻譯")?.body;
+  const lead = sections.find((s) => s.title === LEAD[task])?.body;
 
   const copy = async () => {
-    await navigator.clipboard.writeText(translation ?? result).catch(() => {});
+    const text = task === "search"
+      ? sections.filter((s) => s.title !== QUERIES).map((s) => (s.title ? `${s.title}\n${s.body}` : s.body)).join("\n\n")
+      : lead ?? result;
+    await navigator.clipboard.writeText(text).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
@@ -186,7 +214,9 @@ export function Popup() {
   const streaming = status === "streaming";
   const media = input?.media ?? null;
   const kind = media ? kindOf(media.mime) : null;
-  const skeletonGroups = tutor ? 3 : media ? 2 : 1;
+  const skeletonGroups = task !== "translate" ? 3 : tutor ? 3 : media ? 2 : 1;
+  const active = infoRef.current.find((p) => p.provider === activeId);
+  const offline = task === "search" && active && !active.web;
 
   return (
     <div
@@ -198,13 +228,20 @@ export function Popup() {
       onDrop={(e) => { e.preventDefault(); setDragging(false); useFiles(e.dataTransfer.files); }}
     >
       <div className="pop-head" data-tauri-drag-region>
-        <span className="where" data-tauri-drag-region>
-          {provider ? `${provider.name} · ${settings!.models[provider.id]}${override ? "（這次）" : ""}` : "ContextLens"}
-        </span>
-        <span className="mode">
-          教學
-          <button className="switch" role="switch" aria-checked={tutor} aria-label="教學模式" onClick={toggleTutor} />
-        </span>
+        <div className="tasks" role="tablist" aria-label="動作">
+          {TASKS.map((t) => (
+            <button key={t.id} role="tab" aria-selected={task === t.id} title={t.hint} onClick={() => switchTask(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <span className="grow" data-tauri-drag-region />
+        {task === "translate" && (
+          <span className="mode">
+            教學
+            <button className="switch" role="switch" aria-checked={tutor} aria-label="教學模式" onClick={toggleTutor} />
+          </span>
+        )}
         <button
           className={`btn quiet${pinned ? " on" : ""}`} onClick={togglePin} aria-pressed={pinned}
           title={pinned ? "取消固定：新的翻譯會跳到游標旁" : "固定位置：新的翻譯會在這裡更新"}
@@ -238,7 +275,7 @@ export function Popup() {
                 {blocked.alternatives.map((p) => {
                   const name = PROVIDERS.find((x) => x.id === p.provider)?.name;
                   return (
-                    <button key={p.provider} className="btn" onClick={() => input && start(input, tutor, p.provider)}>
+                    <button key={p.provider} className="btn" onClick={() => input && start(input, task, tutor, p.provider)}>
                       改用 {name} 處理這次
                     </button>
                   );
@@ -264,7 +301,7 @@ export function Popup() {
 
         {status === "idle" && (
           <div className="dropzone">
-            <p>反白文字按熱鍵，或把圖片、音訊、影片拖到這裡。</p>
+            <p>反白文字或截圖後按熱鍵，或把圖片、音訊、影片拖到這裡。</p>
             <p className="faint">也可以按 Ctrl+V 貼上圖片。</p>
             <button className="btn" onClick={() => fileInput.current?.click()}>選擇檔案</button>
           </div>
@@ -276,24 +313,59 @@ export function Popup() {
           <p className={`result${streaming ? " caret" : ""}`}>{result}</p>
         )}
 
+        {offline && status !== "error" && (result || streaming) && (
+          <p className="offline faint">這個模型無法上網，以下是模型本身的知識，可能不是最新資訊。</p>
+        )}
+
         {status !== "error" && hasHeadings && sections.map((s, i) => (
           <section
             key={s.title ?? i}
-            className={`sec${s.title === "翻譯" ? " lead" : ""}${s.title === "原文" ? " orig" : ""}`}
+            className={`sec${s.title === LEAD[task] ? " lead" : ""}${s.title && MUTED.has(s.title) ? " orig" : ""}`}
           >
             {s.title && <h2>{s.title}</h2>}
-            <div className={streaming && i === sections.length - 1 ? "caret" : undefined}><Rich text={s.body} /></div>
+            {s.title === QUERIES ? (
+              <div className="queries">
+                {s.body.split("\n").map((l) => l.replace(/^\s*[-*•]\s*/, "").replace(/^["「]|["」]$/g, "").trim())
+                  .filter(Boolean)
+                  .map((q) => (
+                    <button key={q} className="chip" onClick={() => searchWeb(q)} title="用瀏覽器搜尋">{q} ↗</button>
+                  ))}
+              </div>
+            ) : (
+              <div className={streaming && i === sections.length - 1 ? "caret" : undefined}><Rich text={s.body} /></div>
+            )}
           </section>
         ))}
+
+        {sources.length > 0 && (
+          <section className="sec sources">
+            <h2>來源</h2>
+            <ol>
+              {sources.map((s) => (
+                <li key={s.url}>
+                  <button className="link" onClick={() => openLink(s.url)} title={s.url}>
+                    {s.title !== s.url ? s.title : host(s.url)}
+                  </button>
+                  <span className="faint"> · {host(s.url)}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
       </div>
 
       <div className="pop-foot">
-        <span className="grow">
-          {streaming ? (result ? "翻譯中…" : "") : status === "done" ? "已完成" : ""}
-          {!pinned && kept && status !== "idle" && <span className="faint"> · 已保留，Esc 關閉</span>}
+        <span className="grow foot-status">
+          {streaming && result ? <span>{task === "search" ? "搜尋中…" : "處理中…"} · </span> : null}
+          <span className="faint">
+            {provider ? `${provider.name} · ${settings!.models[provider.id]}${override ? "（這次）" : ""}` : ""}
+          </span>
+          {!pinned && kept && status !== "idle" && <span className="faint"> · Esc 關閉</span>}
         </span>
-        <button className="btn quiet" onClick={() => fileInput.current?.click()} title="翻譯圖片、音訊或影片">檔案…</button>
-        <button className="btn" onClick={copy} disabled={!result}>{copied ? "已複製" : "複製譯文"}</button>
+        <button className="btn quiet" onClick={() => fileInput.current?.click()} title="分析圖片、音訊或影片">檔案…</button>
+        <button className="btn" onClick={copy} disabled={!result}>
+          {copied ? "已複製" : task === "translate" ? "複製譯文" : "複製"}
+        </button>
         <span
           className="grip" aria-hidden
           onPointerDown={(e) => { e.preventDefault(); setKept(true); getCurrentWindow().startResizeDragging("SouthEast"); }}
@@ -304,7 +376,7 @@ export function Popup() {
         ref={fileInput} type="file" hidden accept="image/*,audio/*,video/*"
         onChange={(e) => { useFiles(e.target.files); e.target.value = ""; }}
       />
-      {dragging && <div className="drop-veil">放開以翻譯</div>}
+      {dragging && <div className="drop-veil">放開以{TASKS.find((t) => t.id === task)?.label}</div>}
     </div>
   );
 }
