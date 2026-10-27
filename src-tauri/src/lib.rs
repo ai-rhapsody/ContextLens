@@ -152,6 +152,37 @@ fn open_settings(app: &AppHandle) {
     }
 }
 
+/// The tray icon toggles the settings window: hide it when it is in front, otherwise bring it up.
+fn toggle_settings(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let front = win.is_visible().unwrap_or(false)
+            && !win.is_minimized().unwrap_or(false)
+            && win.is_focused().unwrap_or(false);
+        if front {
+            let _ = win.hide();
+            return;
+        }
+    }
+    open_settings(app);
+}
+
+/// Passed by the sign-in launcher so ContextLens starts with only its tray icon.
+const START_IN_TRAY_ARG: &str = "--tray";
+
+#[tauri::command]
+fn autostart_get(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn autostart_set(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let l = app.autolaunch();
+    let r = if enabled { l.enable() } else { l.disable() };
+    r.map_err(|e| format!("無法變更開機啟動：{e}"))
+}
+
 /// Overlay windows are "snip-<monitor index>".
 fn snip_index(label: &str) -> Option<usize> {
     label.strip_prefix("snip-")?.parse().ok()
@@ -1035,12 +1066,19 @@ pub fn run() {
     tauri::Builder::default()
         // Must be registered first: a second launch hands over to the running app and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| open_settings(app)))
+        // Started by the system at sign-in: stay in the tray.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![START_IN_TRAY_ARG]),
+        ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_settings,
+            autostart_get,
+            autostart_set,
             save_settings,
             set_api_key,
             delete_api_key,
@@ -1101,13 +1139,17 @@ pub fn run() {
             if let (Some([w, h]), Some(win)) = (settings.popup_size, popup(&handle)) {
                 let _ = win.set_size(LogicalSize::new(w as f64, h as f64));
             }
+            let in_tray = settings.start_in_tray || std::env::args().any(|a| a == START_IN_TRAY_ARG);
+            if !in_tray {
+                open_settings(&handle);
+            }
 
             let menu = Menu::with_items(
                 app,
                 &[
                     &MenuItem::with_id(app, "translator", "開啟翻譯視窗", true, None::<&str>)?,
                     &MenuItem::with_id(app, "live", "Live 即時翻譯", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "settings", "設定", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "settings", "開啟 ContextLens", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "結束 ContextLens", true, None::<&str>)?,
                 ],
             )?;
@@ -1130,7 +1172,7 @@ pub fn run() {
                         ..
                     } = e
                     {
-                        open_settings(tray.app_handle());
+                        toggle_settings(tray.app_handle());
                     }
                 })
                 .build(app)?;
@@ -1146,8 +1188,25 @@ pub fn run() {
                     }
                 }
             }
-            // Closing a window keeps ContextLens alive in the tray so hotkeys still work.
+            // Minimizing the settings window can tuck it into the tray instead of the taskbar.
+            if let WindowEvent::Resized(_) = event {
+                let app = window.app_handle();
+                if window.label() == "main"
+                    && window.is_minimized().unwrap_or(false)
+                    && app.state::<AppState>().settings.lock().unwrap().minimize_to_tray
+                {
+                    let _ = window.hide();
+                }
+            }
+            // Closing a window keeps ContextLens alive in the tray so hotkeys still work,
+            // unless the user chose to quit when the settings window closes.
             if let WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if window.label() == "main" && !app.state::<AppState>().settings.lock().unwrap().close_to_tray {
+                    stop_live(app);
+                    app.exit(0);
+                    return;
+                }
                 api.prevent_close();
                 if window.label() == "popup" {
                     remember_popup_size(window.app_handle());

@@ -137,6 +137,12 @@ pub struct Settings {
     pub popup_pinned: bool,
     /// Where a pinned translation window sits, in physical pixels.
     pub popup_pos: Option<[i32; 2]>,
+    /// Closing the settings window keeps ContextLens running in the system tray (else it quits).
+    pub close_to_tray: bool,
+    /// Minimizing the settings window hides it in the system tray instead of the taskbar.
+    pub minimize_to_tray: bool,
+    /// Start with only the tray icon, no settings window.
+    pub start_in_tray: bool,
 }
 
 impl Default for Settings {
@@ -163,6 +169,9 @@ impl Default for Settings {
             popup_size: None,
             popup_pinned: false,
             popup_pos: None,
+            close_to_tray: true,
+            minimize_to_tray: true,
+            start_in_tray: false,
         }
     }
 }
@@ -237,6 +246,12 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_settings_keep_running_in_the_tray() {
+        let s: Settings = serde_json::from_str(r#"{"target_language":"English"}"#).unwrap();
+        assert!(s.close_to_tray && s.minimize_to_tray && !s.start_in_tray);
+    }
 
     #[test]
     fn defaults_are_valid_and_traditional_chinese() {

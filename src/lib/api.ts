@@ -30,6 +30,9 @@ export interface Settings {
   popup_size: [number, number] | null;
   popup_pinned: boolean;
   popup_pos: [number, number] | null;
+  close_to_tray: boolean;
+  minimize_to_tray: boolean;
+  start_in_tray: boolean;
 }
 
 export interface Media {
@@ -92,6 +95,8 @@ export const PROVIDERS: { id: Provider; name: string; vendor: string; media: str
   { id: "anthropic", name: "Claude", vendor: "Anthropic", media: "文字、圖片" },
 ];
 
+export const autostartGet = () => invoke<boolean>("autostart_get");
+export const autostartSet = (enabled: boolean) => invoke<void>("autostart_set", { enabled });
 export const getSettings = () => invoke<Settings>("get_settings");
 export const saveSettings = (settings: Settings) => invoke<void>("save_settings", { settings });
 export const setApiKey = (provider: Provider, key: string) =>
