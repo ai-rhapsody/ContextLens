@@ -12,7 +12,7 @@ jobs:
         include:
           - { os: windows-latest, args: "", name: windows }
           - { os: macos-latest, args: "--target aarch64-apple-darwin", name: macos-apple-silicon }
-          - { os: macos-13, args: "--target x86_64-apple-darwin", name: macos-intel }
+          - { os: macos-latest, args: "--target x86_64-apple-darwin", name: macos-intel }
           - { os: ubuntu-22.04, args: "", name: linux }
     runs-on: ${{ matrix.os }}
     steps:
