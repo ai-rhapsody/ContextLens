@@ -350,6 +350,14 @@ pub fn should_retry_with_audio(reason: &str) -> bool {
     !unfixable.iter().any(|u| r.contains(u))
 }
 
+/// Whether an error names the reply modality, e.g. "The requested combination of response
+/// modalities (TEXT) is not supported by the model". Gemini can send this after setup
+/// completed, when the first input arrives, so it is checked on any failure.
+pub fn mentions_modality(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    r.contains("modalit") || (r.contains("text") && r.contains("not supported"))
+}
+
 /// Adds what to do to the errors a user can fix in settings.
 pub fn explain_error(reason: &str, model: &str) -> String {
     let r = reason.to_lowercase();
@@ -544,6 +552,14 @@ mod tests {
         assert!(!should_retry_with_audio(
             "models/gemini-3.8.live is not found for API version v1beta, or is not supported for bidiGenerateContent."
         ));
+    }
+
+    #[test]
+    fn modality_errors_after_setup_are_recognised() {
+        assert!(mentions_modality(
+            "The requested combination of response modalities (TEXT) is not supported by the model. models/gemini_api_beyond_live_rev25_"
+        ));
+        assert!(!mentions_modality("Internal error encountered."));
     }
 
     #[test]

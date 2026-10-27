@@ -77,6 +77,20 @@ pub enum LiveUi {
 
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// Gemini models that refused text replies; later sessions ask them for audio straight away.
+static AUDIO_ONLY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn audio_only(model: &str) -> bool {
+    AUDIO_ONLY.lock().unwrap().iter().any(|m| m == model)
+}
+
+fn mark_audio_only(model: &str) {
+    let mut list = AUDIO_ONLY.lock().unwrap();
+    if !list.iter().any(|m| m == model) {
+        list.push(model.to_string());
+    }
+}
+
 pub struct LiveHandle {
     /// Tells this session apart from a newer one that replaced it.
     pub id: u64,
@@ -655,7 +669,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
             Engine::Realtime { backend, model, api_key } => {
                 let backend = *backend;
                 let mut resume: Option<String> = None;
-                let mut text_output = true;
+                let mut text_output = !audio_only(model);
                 let mut reconnects = 0u32;
                 loop {
                     let opening = backend.opening(&LiveConfig {
@@ -707,11 +721,20 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                             }
                             status(&app, "reconnecting", None);
                         }
+                        // Native-audio models only speak: ask for audio and read its transcription.
+                        // They may refuse before setup completes or only once input arrives.
                         Outcome::Refused(r)
                             if backend == Backend::GeminiLive && text_output && live::should_retry_with_audio(&r) =>
                         {
-                            // Native-audio models only speak; ask for audio and read its transcription.
                             text_output = false;
+                            mark_audio_only(model);
+                        }
+                        Outcome::Failed(r)
+                            if backend == Backend::GeminiLive && text_output && live::mentions_modality(&r) =>
+                        {
+                            text_output = false;
+                            mark_audio_only(model);
+                            status(&app, "reconnecting", None);
                         }
                         Outcome::Refused(r) | Outcome::Failed(r) => {
                             status(&app, "error", Some(live::explain_error(&r, model)));
@@ -805,6 +828,41 @@ mod tests {
             Outcome::Refused(r) => assert!(r.contains("API key")),
             _ => panic!("expected a refusal"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_text_refusal_after_setup_is_a_failure_that_names_the_modality() {
+        use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(sock).await.unwrap();
+            let _setup = ws.next().await;
+            ws.send(Message::binary(br#"{"setupComplete":{}}"#.to_vec())).await.unwrap();
+            let _audio = ws.next().await;
+            // What Gemini 3.8 Live does with a TEXT request.
+            let reason = "The requested combination of response modalities (TEXT) is not supported by the model.";
+            let _ = ws.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: reason.into() }))).await;
+        });
+        let (tx, mut rx) = mpsc::channel(4);
+        let (_stop_tx, mut stop) = watch::channel(false);
+        tx.send(Outgoing::Audio(vec![0u8; 320])).await.unwrap();
+        let mut on = |_: ServerEvent| {};
+        let run = session(Backend::GeminiLive, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
+        match tokio::time::timeout(Duration::from_secs(5), run).await.unwrap() {
+            Outcome::Failed(r) => assert!(live::mentions_modality(&r), "{r}"),
+            _ => panic!("expected a failure after setup"),
+        }
+    }
+
+    #[test]
+    fn audio_only_models_are_remembered() {
+        assert!(!audio_only("gemini-test-live"));
+        mark_audio_only("gemini-test-live");
+        mark_audio_only("gemini-test-live");
+        assert!(audio_only("gemini-test-live"));
+        assert_eq!(AUDIO_ONLY.lock().unwrap().iter().filter(|m| *m == "gemini-test-live").count(), 1);
     }
 
     #[test]
