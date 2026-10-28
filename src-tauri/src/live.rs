@@ -887,6 +887,11 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         {
                             let next = fallback.take().unwrap();
                             let why = format!("口譯模型 {model} 無法使用，改用 {next}。（{}）", live::explain_error(&r, &model));
+                            // Keep an earlier notice too, e.g. that the microphone was swapped for system audio.
+                            let why = match notice.take() {
+                                Some(earlier) => format!("{earlier} {why}"),
+                                None => why,
+                            };
                             status(&app, "reconnecting", Some(why.clone()));
                             notice = Some(why);
                             *label.lock().unwrap() = format!("Gemini · {next}");

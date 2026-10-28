@@ -58,11 +58,20 @@ export function Live() {
 
   useEffect(() => {
     refresh();
+    // A session can end mid-line (the interpreter only ends a line when the next one starts):
+    // keep that line with its own session instead of carrying it into the next.
+    const settle = () => {
+      const done = cur.current;
+      if (done.input.trim() || done.output.trim()) setTurns((t) => [...t.slice(-200), done]);
+      cur.current = { input: "", output: "" };
+      setCurrent(cur.current);
+    };
     const unLive = listen<LiveEvent>("live", ({ payload: e }) => {
       if (e.kind === "status") {
         // A new session (not a reconnect or a source change): set the old captions apart.
         const was = lastState.current;
         lastState.current = e.state;
+        if (e.state === "connecting") settle();
         if (e.state === "connecting" && ["idle", "stopped", "paused", "error"].includes(was)) {
           const at = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
           setTurns((t) => (t.length && !t[t.length - 1].divider ? [...t, { input: "", output: "", divider: at }] : t));
@@ -75,15 +84,12 @@ export function Live() {
         cur.current = { ...cur.current, [e.kind]: cur.current[e.kind] + e.text };
         setCurrent(cur.current);
       } else if (e.kind === "turn_complete") {
-        const done = cur.current;
-        if (done.input.trim() || done.output.trim()) setTurns((t) => [...t.slice(-200), done]);
-        cur.current = { input: "", output: "" };
-        setCurrent(cur.current);
+        settle();
       } else if (e.kind === "level") {
         setLevel(e.value);
       }
     });
-    const unEnded = listen("live-ended", () => { setLevel(0); setStartedAt(null); refresh(); });
+    const unEnded = listen("live-ended", () => { settle(); setLevel(0); setStartedAt(null); refresh(); });
     const unChanged = listen("live-changed", refresh);
     const unFocus = listen("tauri://focus", refresh);
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeLive();

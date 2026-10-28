@@ -97,6 +97,89 @@ pub fn selected_text() -> Result<String, String> {
     }
 }
 
+/// Where the selection is on screen, in physical pixels: the top of its first line and the
+/// bottom of its last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    pub top: f64,
+    pub bottom: f64,
+}
+
+/// Lets the popup open beneath the whole selection rather than under the cursor, which a
+/// triple-click leaves in the middle of the paragraph. `None` when the app does not say.
+#[cfg(target_os = "windows")]
+pub fn selection_span() -> Option<Span> {
+    // UI Automation can stall on a busy app; the cursor is a fine fallback.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(uia::selection_span());
+    });
+    rx.recv_timeout(Duration::from_millis(300)).ok().flatten()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn selection_span() -> Option<Span> {
+    None
+}
+
+/// The span covering every line rectangle ([left, top, width, height]) that has a size.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn span_of(lines: &[[f64; 4]]) -> Option<Span> {
+    lines.iter().filter(|r| r[2] > 0.0 && r[3] > 0.0).fold(None, |s, r| {
+        let (top, bottom) = (r[1], r[1] + r[3]);
+        Some(s.map_or(Span { top, bottom }, |s: Span| Span { top: s.top.min(top), bottom: s.bottom.max(bottom) }))
+    })
+}
+
+#[cfg(target_os = "windows")]
+mod uia {
+    use super::Span;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, SAFEARRAY,
+    };
+    use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetUBound, SafeArrayUnaccessData};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId};
+
+    pub fn selection_span() -> Option<Span> {
+        unsafe {
+            let initialised = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+            let span = focused_selection();
+            if initialised {
+                CoUninitialize();
+            }
+            span
+        }
+    }
+
+    /// The selection in the focused control, for apps that expose it (browsers, Word, edit boxes).
+    unsafe fn focused_selection() -> Option<Span> {
+        let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let text: IUIAutomationTextPattern = uia.GetFocusedElement().ok()?.GetCurrentPatternAs(UIA_TextPatternId).ok()?;
+        let ranges = text.GetSelection().ok()?;
+        let mut lines = Vec::new();
+        for i in 0..ranges.Length().ok()? {
+            lines.extend(rectangles(ranges.GetElement(i).ok()?.GetBoundingRectangles().ok()?));
+        }
+        super::span_of(&lines)
+    }
+
+    /// Reads and frees the [left, top, width, height, …] array UI Automation hands back.
+    unsafe fn rectangles(array: *mut SAFEARRAY) -> Vec<[f64; 4]> {
+        if array.is_null() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut data: *mut core::ffi::c_void = core::ptr::null_mut();
+        if let (Ok(upper), Ok(())) = (SafeArrayGetUBound(array, 1), SafeArrayAccessData(array, &mut data)) {
+            let values = core::slice::from_raw_parts(data as *const f64, (upper + 1).max(0) as usize);
+            out = values.chunks_exact(4).map(|r| [r[0], r[1], r[2], r[3]]).collect();
+            let _ = SafeArrayUnaccessData(array);
+        }
+        let _ = SafeArrayDestroy(array);
+        out
+    }
+}
+
 /// If Ctrl+C is sent while the user still holds the hotkey (say Ctrl+Shift+T), the app sees
 /// Ctrl+Shift+C, which is not Copy (in a browser it opens the inspector). Wait for the release.
 #[cfg(target_os = "windows")]
@@ -227,6 +310,13 @@ mod tests {
         assert!(!s.contains('\0'));
         assert!(!s.trim().is_empty());
         assert_ne!(s, sentinel_after_a_moment());
+    }
+
+    #[test]
+    fn span_covers_every_line_and_skips_empty_ones() {
+        let lines = [[10.0, 100.0, 300.0, 20.0], [10.0, 120.0, 0.0, 0.0], [10.0, 140.0, 120.0, 20.0]];
+        assert_eq!(span_of(&lines), Some(Span { top: 100.0, bottom: 160.0 }));
+        assert_eq!(span_of(&[]), None);
     }
 
     fn sentinel_after_a_moment() -> String {
