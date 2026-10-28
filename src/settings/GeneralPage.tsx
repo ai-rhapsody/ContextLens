@@ -44,7 +44,7 @@ export function GeneralPage({ settings, commit }: { settings: Settings; commit: 
         <div className="row">
           <div className="grow">
             <div className="label">已經是我的語言時翻成英文</div>
-            <div className="hint">關閉時，已經是「我的語言」的文字保持原樣不翻譯；夾雜英文縮寫的句子仍會翻成我的語言。</div>
+            <div className="hint">選的文字已經是我的語言時，改翻成英文。</div>
           </div>
           <Toggle on={settings.own_language_to_english} label="已經是我的語言時翻成英文"
             onClick={() => commit({ ...settings, own_language_to_english: !settings.own_language_to_english })} />

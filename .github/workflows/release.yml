@@ -28,10 +28,12 @@ jobs:
       fail-fast: false
       matrix:
         # Every platform by default; "windows" alone is faster for a Windows-only fix.
-        include: ${{ fromJSON(inputs.platforms == 'windows' && '[{"os":"windows-latest","args":"--bundles nsis"}]' || '[{"os":"macos-latest","args":"--target aarch64-apple-darwin"},{"os":"macos-latest","args":"--target x86_64-apple-darwin"},{"os":"ubuntu-24.04","args":""},{"os":"windows-latest","args":"--bundles nsis"}]') }}
+        # macOS is left out for now. To bring it back, add to the "all" list:
+        #   {"os":"macos-latest","args":"--target aarch64-apple-darwin"},{"os":"macos-latest","args":"--target x86_64-apple-darwin"}
+        include: ${{ fromJSON(inputs.platforms == 'windows' && '[{"os":"windows-latest","args":"--bundles nsis"}]' || '[{"os":"ubuntu-24.04","args":""},{"os":"windows-latest","args":"--bundles nsis"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set the version
         shell: bash
         env:
@@ -64,7 +66,7 @@ jobs:
             fs.writeFileSync(c, fs.readFileSync(c, "utf8").replace(/^version = ".*"$/m, `version = "${v}"`));
           ' "$V"
           echo "Releasing v$V"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -80,17 +82,34 @@ jobs:
       - run: npm ci
       # macOS: with the Apple secrets set, the app is signed with the Developer ID certificate
       # and notarized by Apple; without them it is ad-hoc signed (users must clear quarantine).
+      # Only secrets that are set are passed on: tauri treats an empty APPLE_CERTIFICATE as a
+      # certificate and fails to import it.
       - name: macOS signing
         if: startsWith(matrix.os, 'macos')
         shell: bash
         env:
-          HAS_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
-          HAS_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ "$HAS_CERT" != "true" ]; then
-            echo "::warning::APPLE_CERTIFICATE is not set: the macOS app is ad-hoc signed and not notarized."
+          pass() {
+            local d="EOF_$RANDOM$RANDOM"
+            { echo "$1<<$d"; printenv "$1"; echo "$d"; } >> "$GITHUB_ENV"
+          }
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::notice::APPLE_CERTIFICATE is not set: the macOS app is ad-hoc signed and not notarized."
             echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-          elif [ "$HAS_NOTARY" != "true" ]; then
+            exit 0
+          fi
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+            [ -n "${!v}" ] && pass "$v"
+          done
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            for v in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do pass "$v"; done
+          else
             echo "::warning::APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID are not all set: signed but not notarized."
           fi
       - uses: tauri-apps/tauri-action@v0
@@ -98,17 +117,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Read only on macOS. APPLE_SIGNING_IDENTITY may also come from the step above ("-").
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
           releaseName: "ContextLens v__VERSION__"
-          releaseBody: "下載：Windows 選 -setup.exe；macOS 選 .dmg（aarch64 是 Apple Silicon，x64 是 Intel）；Linux 選 .AppImage（可自動更新）、.deb 或 .rpm。已安裝的版本可以在 App 的「更新」頁直接更新。隱私政策與簽章政策：https://github.com/ai-rhapsody/ContextLens#隱私"
+          releaseBody: "下載：Windows 選 -setup.exe；Linux 選 .AppImage（可自動更新）、.deb 或 .rpm。已安裝的版本可以在 App 的「更新」頁直接更新。隱私政策與簽章政策：https://github.com/ai-rhapsody/ContextLens#隱私"
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

@@ -85,7 +85,7 @@ fn outer_size_or(win: &WebviewWindow, fallback: [u32; 2], scale: f64) -> (f64, f
     }
 }
 
-fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
+fn place_near_cursor(app: &AppHandle, win: &WebviewWindow, selection: Option<capture::Span>) {
     let Ok(cursor) = app.cursor_position() else { return };
     let (mut x, mut y) = (cursor.x + 16.0, cursor.y + 16.0);
     // Fall back to the window's or the primary monitor when the point lookup finds none.
@@ -101,15 +101,21 @@ fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
         let (w, h) = outer_size_or(win, configured, scale);
         let (mp, ms) = (mon.position(), mon.size());
         let (top, bottom) = (mp.y as f64 + 8.0, mp.y as f64 + ms.height as f64 - 8.0);
-        // The selection ends at the cursor: open below its line, or above it when there is no
-        // room, but never clamp onto the line itself and cover the text being translated.
-        let below = cursor.y + 28.0 * scale;
-        let above = cursor.y - 28.0 * scale - h;
+        // Open below the selection, or above it when there is no room, but never clamp onto it
+        // and cover the text being translated. When the app does not say where the selection
+        // is, it is taken to end on the cursor's line.
+        let span = selection.filter(|s| s.top >= top - 8.0 && s.bottom <= bottom + 8.0 && s.bottom > s.top);
+        let (sel_top, sel_bottom, gap) = match span {
+            Some(s) => (s.top, s.bottom, 8.0 * scale),
+            None => (cursor.y, cursor.y, 28.0 * scale),
+        };
+        let below = sel_bottom + gap;
+        let above = sel_top - gap - h;
         y = if below + h <= bottom {
             below
         } else if above >= top {
             above
-        } else if bottom - cursor.y >= cursor.y - top {
+        } else if bottom - sel_bottom >= sel_top - top {
             bottom - h
         } else {
             top
@@ -122,6 +128,11 @@ fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
 }
 
 fn show_popup(app: &AppHandle, capture: Capture) {
+    show_popup_at(app, capture, None);
+}
+
+/// `selection`: where the captured text is on screen, to open beneath it.
+fn show_popup_at(app: &AppHandle, capture: Capture, selection: Option<capture::Span>) {
     let Some(win) = popup(app) else { return };
     let state = app.state::<AppState>();
     *state.pending.lock().unwrap() = Some(capture);
@@ -131,7 +142,7 @@ fn show_popup(app: &AppHandle, capture: Capture) {
             let _ = win.set_position(PhysicalPosition::new(x, y));
         }
     } else {
-        place_near_cursor(app, &win);
+        place_near_cursor(app, &win, selection);
     }
     let _ = win.show();
     let _ = win.set_focus();
@@ -485,11 +496,14 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
             Source::Selection => {
                 // Let the user's fingers leave the hotkey before we press Copy.
                 let _ = blocking(|| Ok(std::thread::sleep(std::time::Duration::from_millis(150)))).await;
-                let capture = match blocking(capture::selected_text).await {
+                // Ask where the selection is before Copy, while its app still has the focus.
+                let read = blocking(|| Ok((capture::selection_span(), capture::selected_text()))).await;
+                let (span, text) = read.unwrap_or_else(|e| (None, Err(e)));
+                let capture = match text {
                     Ok(text) => Capture { text, tutor, task, ..Default::default() },
                     Err(e) => failed(e),
                 };
-                show_popup(&app, capture);
+                show_popup_at(&app, capture, span);
             }
             Source::ClipboardImage => {
                 let capture = match blocking(capture::clipboard_image).await {
