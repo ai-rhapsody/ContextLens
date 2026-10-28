@@ -98,7 +98,9 @@
           "libayatana-appindicator3-1"
         ]
       }
-    }
+    },
+    "license": "GPL-3.0-or-later",
+    "copyright": "Copyright © 2026 dalof41014. Licensed under GPL-3.0-or-later."
   },
   "plugins": {
     "updater": {

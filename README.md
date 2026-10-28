@@ -93,5 +93,5 @@ Privacy: this program will not transfer any information to other networked syste
 
 ## 授權
 
-（待定）
+[GPL-3.0-or-later](LICENSE)。可以自由使用、修改和分享；把修改過的版本發布出去時，必須同樣以 GPL 授權公開完整原始碼。
 

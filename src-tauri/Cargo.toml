@@ -3,6 +3,7 @@ name = "contextlens"
 version = "0.1.4"
 description = "Hotkey capture, instant translation and a tutor mode"
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "contextlens_lib"
