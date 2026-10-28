@@ -47,6 +47,10 @@ fn touch(activity: &AtomicU64, epoch: Instant) {
     activity.store(epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
 }
 
+pub fn has_microphone() -> bool {
+    cpal::default_host().default_input_device().is_some()
+}
+
 pub const SYSTEM_AUDIO_SUPPORTED: bool = cfg!(target_os = "windows");
 
 /// Events for the caption window.
@@ -86,8 +90,8 @@ pub struct LiveHandle {
     capture_stop: Arc<AtomicBool>,
     pub sources: Vec<LiveSource>,
     pub tutor: bool,
-    /// "Gemini · gemini-live-…", shown in the caption bar.
-    pub label: String,
+    /// "Gemini · gemini-live-…", shown in the caption bar; changes if the interpreter is swapped out.
+    pub label: Arc<std::sync::Mutex<String>>,
 }
 
 impl LiveHandle {
@@ -130,6 +134,8 @@ pub struct StartArgs {
     pub target_language: String,
     pub idle_minutes: u32,
     pub screen: Option<ScreenTarget>,
+    /// Shown with "listening", e.g. that the microphone was swapped for system audio.
+    pub notice: Option<String>,
 }
 
 fn emit(app: &AppHandle, e: LiveUi) {
@@ -248,11 +254,27 @@ fn spawn_mixer(
     std::thread::spawn(move || {
         let mut bufs: Vec<VecDeque<f32>> = vec![VecDeque::new(); sources];
         let mut last_level = Instant::now();
+        let mut last_sent = Instant::now();
+        // Silence sent after the sources go quiet, so the model hears the speech end.
+        let mut padded = Duration::ZERO;
         while !stop.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok((i, s)) => bufs[i].extend(s),
+                Ok((i, s)) => {
+                    bufs[i].extend(s);
+                    padded = Duration::ZERO;
+                }
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            // Loopback sends nothing while nothing plays: pad a little silence (not forever,
+            // since sent audio is billed) so the last words are finished, not left hanging.
+            if bufs.iter().all(|b| b.is_empty()) && last_sent.elapsed() >= Duration::from_millis(150) && padded < MAX_PAD {
+                padded += Duration::from_millis(100);
+                last_sent = Instant::now();
+                if out.blocking_send(Outgoing::Audio(live::to_pcm16le(&vec![0f32; chunk]))).is_err() {
+                    return;
+                }
+                continue;
             }
             // A source that plays nothing (loopback during silence) delivers no data at all,
             // so mix whenever any source has a full chunk.
@@ -272,6 +294,7 @@ fn spawn_mixer(
                     emit(&app, LiveUi::Level { value: (level * 4.0).min(1.0) });
                     last_level = Instant::now();
                 }
+                last_sent = Instant::now();
                 if out.blocking_send(Outgoing::Audio(live::to_pcm16le(&mix))).is_err() {
                     return;
                 }
@@ -279,6 +302,9 @@ fn spawn_mixer(
         }
     });
 }
+
+/// Longest silence padded after the audio sources go quiet.
+const MAX_PAD: Duration = Duration::from_millis(1500);
 
 /// Longest side of a frame sent to Live; enough to read subtitles and slides.
 const FRAME_SIDE: u32 = 1024;
@@ -403,6 +429,8 @@ async fn session(
     }
     let mut started = false;
     let mut segmenter = live::Segmenter::new(backend.sample_rate());
+    let mut last_audio = Instant::now();
+    let mut gap_check = tokio::time::interval(Duration::from_millis(200));
     let setup_deadline = tokio::time::sleep(Duration::from_secs(15));
     tokio::pin!(setup_deadline);
     loop {
@@ -414,7 +442,22 @@ async fn session(
             _ = &mut setup_deadline, if !started => {
                 return Outcome::Refused("即時服務沒有回應。".into());
             }
+            _ = gap_check.tick(), if started && manual => {
+                let gap = last_audio.elapsed().as_millis().min(u32::MAX as u128) as u32;
+                for seg in segmenter.gap(gap) {
+                    if let live::Seg::Activity(a) = seg {
+                        for m in backend.activity(a) {
+                            if let Err(e) = ws.send(Message::text(m.to_string())).await {
+                                return Outcome::Failed(e.to_string());
+                            }
+                        }
+                    }
+                }
+            }
             next = outgoing.recv(), if started => {
+                if matches!(next, Some(Outgoing::Audio(_))) {
+                    last_audio = Instant::now();
+                }
                 let msgs = match next {
                     Some(Outgoing::Audio(pcm)) if manual => segmenter
                         .push(pcm)
@@ -441,7 +484,11 @@ async fn session(
                     // Gemini sends its JSON in binary frames.
                     Some(Ok(Message::Binary(b))) => String::from_utf8_lossy(&b).into_owned(),
                     Some(Ok(Message::Close(frame))) => {
-                        let reason = frame.map(|f| f.reason.to_string()).unwrap_or_default();
+                        let mut reason = frame.map(|f| f.reason.to_string()).unwrap_or_default();
+                        // A WebSocket close reason holds at most 123 bytes; say when it was cut.
+                        if reason.len() >= 120 {
+                            reason.push_str("…（伺服器的說明到這裡被截斷）");
+                        }
                         return if !started {
                             Outcome::Refused(if reason.is_empty() { "連線被拒絕。".into() } else { reason })
                         } else if reason.is_empty() {
@@ -571,11 +618,12 @@ async fn reader(
     outgoing: &mut mpsc::Receiver<Outgoing>,
     stop: &mut watch::Receiver<bool>,
     transcript: &mut Transcript,
+    notice: Option<String>,
 ) {
     let http = contextlens_core::http_client();
     let mut frame: Option<String> = None;
     let mut recent: VecDeque<String> = VecDeque::new();
-    status(app, "listening", None);
+    status(app, "listening", notice);
     loop {
         let next = tokio::select! {
             _ = stop.changed() => return,
@@ -736,13 +784,18 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
     }
 
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+    let label = Arc::new(std::sync::Mutex::new(format!(
+        "{} · {}",
+        args.engine.provider().display_name(),
+        args.engine.model()
+    )));
     let handle = LiveHandle {
         id,
         stop: stop_tx,
         capture_stop: capture_stop.clone(),
         sources: args.sources.clone(),
         tutor: args.tutor,
-        label: format!("{} · {}", args.engine.provider().display_name(), args.engine.model()),
+        label: label.clone(),
     };
 
     tauri::async_runtime::spawn(async move {
@@ -751,7 +804,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
         match &args.engine {
             Engine::Reader { provider, model, api_key } => {
                 reader(&app, *provider, model, api_key, &args.target_language, args.tutor,
-                       &mut out_rx, &mut stop_rx, &mut transcript).await;
+                       &mut out_rx, &mut stop_rx, &mut transcript, args.notice.clone()).await;
             }
             Engine::Realtime { backend, model, api_key, fallback } => {
                 let mut backend = *backend;
@@ -761,6 +814,10 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                 let mut text_output = !audio_only(&app, &model);
                 let mut reconnects = 0u32;
                 let mut fresh_retry = false;
+                // Speech heard while the previous answer was still streaming (see Input below).
+                let mut held = String::new();
+                // Shown once listening; also says why the interpreter was swapped out.
+                let mut notice = args.notice.clone();
                 let mut manual = backend.manual_activity();
                 loop {
                     let opening = backend.opening(&LiveConfig {
@@ -774,27 +831,32 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                     });
                     let mut announced = false;
                     let ui = app.clone();
+                    let note = notice.clone();
                     let mut on = |ev: ServerEvent| match ev {
                         ServerEvent::SetupComplete => {
                             if !announced {
                                 announced = true;
-                                status(&ui, "listening", None);
+                                status(&ui, "listening", note.clone());
                             }
                         }
                         ServerEvent::Input(t) => {
-                            // Gemini transcribes the next speech as it comes, so new input after a
-                            // finished reply starts a new turn. OpenAI sends each transcript whole,
-                            // sometimes after the reply has begun, so it belongs to the current turn.
+                            // Gemini Live transcribes the next passage while it is still answering
+                            // the last one: hold that text until the answer is complete, so each
+                            // line's original sits above its own translation.
                             // The interpreter translates while people keep talking, so its line
                             // ends at a finished sentence instead.
-                            let new_line = match backend {
-                                Backend::GeminiLive => !transcript.output.is_empty(),
-                                Backend::GeminiTranslate => live::caption_break(&transcript.output),
-                                Backend::OpenAiRealtime => false,
-                            };
-                            if new_line {
-                                transcript.end_turn();
-                                emit(&ui, LiveUi::TurnComplete);
+                            // OpenAI sends each transcript whole, sometimes after the reply has
+                            // begun, so it belongs to the current turn.
+                            match backend {
+                                Backend::GeminiLive if !transcript.output.is_empty() => {
+                                    held.push_str(&t);
+                                    return;
+                                }
+                                Backend::GeminiTranslate if live::caption_break(&transcript.output) => {
+                                    transcript.end_turn();
+                                    emit(&ui, LiveUi::TurnComplete);
+                                }
+                                _ => {}
                             }
                             transcript.input.push_str(&t);
                             emit(&ui, LiveUi::Input { text: t });
@@ -806,6 +868,11 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         ServerEvent::TurnComplete => {
                             transcript.end_turn();
                             emit(&ui, LiveUi::TurnComplete);
+                            if !held.is_empty() {
+                                let next = std::mem::take(&mut held);
+                                transcript.input.push_str(&next);
+                                emit(&ui, LiveUi::Input { text: next });
+                            }
                         }
                         ServerEvent::ResumeHandle(h) => resume = Some(h),
                         ServerEvent::GoAway | ServerEvent::Error(_) => {}
@@ -819,9 +886,11 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                             if backend == Backend::GeminiTranslate && fallback.is_some() =>
                         {
                             let next = fallback.take().unwrap();
-                            status(&app, "reconnecting", Some(format!(
-                                "口譯模型 {model} 無法使用，改用 {next}。（{}）", live::explain_error(&r, &model)
-                            )));
+                            let why = format!("口譯模型 {model} 無法使用，改用 {next}。（{}）", live::explain_error(&r, &model));
+                            status(&app, "reconnecting", Some(why.clone()));
+                            notice = Some(why);
+                            *label.lock().unwrap() = format!("Gemini · {next}");
+                            let _ = app.emit_to("live", "live-changed", ());
                             backend = Backend::GeminiLive;
                             model = next;
                             text_output = !audio_only(&app, &model);

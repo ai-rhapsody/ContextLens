@@ -86,7 +86,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "ContextLens v__VERSION__"
-          releaseBody: "Windows: the -setup.exe. macOS: the .dmg (aarch64 = Apple Silicon, x64 = Intel). Linux: the .AppImage (auto-updates), .deb or .rpm. Privacy policy and code signing policy: https://github.com/dalof41014/ContextLens#code-signing-policy"
+          releaseBody: "下載：Windows 選 -setup.exe；macOS 選 .dmg（aarch64 是 Apple Silicon，x64 是 Intel）；Linux 選 .AppImage（可自動更新）、.deb 或 .rpm。已安裝的版本可以在 App 的「更新」頁直接更新。隱私政策與簽章政策：https://github.com/dalof41014/ContextLens#隱私"
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

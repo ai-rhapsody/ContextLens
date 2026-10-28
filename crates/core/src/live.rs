@@ -208,6 +208,8 @@ pub fn system_prompt(target: &str, tutor: bool, screen: ScreenMode) -> String {
             "You are a live interpreter. You hear speech. \
              Each time a speaker finishes a sentence or a short passage, reply with only its translation into {target}. \
              Translate every sentence of the passage, not just the last one. \
+             Keep names and titles (people, groups, songs, albums, shows) as they are said, in their \
+             original spelling, instead of guessing a translation. \
              Speech mixing in English words or abbreviations is still translated into {target}; \
              speech that is already in {target} needs no reply. \
              Write plain text without Markdown. \
@@ -264,12 +266,14 @@ pub fn setup_message(c: &LiveConfig) -> Value {
 /// Setup for the interpreter model. It takes no system instruction: the target language and
 /// whether to repeat speech already in it are all it is told.
 pub fn translate_setup_message(c: &LiveConfig) -> Value {
+    // The transcription switches belong at the setup level; inside generationConfig (as the
+    // documentation's sample has them) the API rejects the setup.
     json!({ "setup": {
         "model": format!("models/{}", c.model.trim_start_matches("models/")),
+        "inputAudioTranscription": {},
+        "outputAudioTranscription": {},
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "inputAudioTranscription": {},
-            "outputAudioTranscription": {},
             "translationConfig": {
                 "targetLanguageCode": language_code(c.target_language).unwrap_or("en"),
                 "echoTargetLanguage": false,
@@ -290,8 +294,9 @@ pub fn caption_break(output: &str) -> bool {
 pub fn language_code(target: &str) -> Option<&str> {
     let t = target.trim();
     let named = match t {
-        "繁體中文" | "正體中文" | "中文（繁體）" => "zh-TW",
-        "简体中文" | "簡體中文" | "中文（简体）" => "zh-CN",
+        // Script subtags, as the documentation uses; in a test zh-TW once mistranslated a time.
+        "繁體中文" | "正體中文" | "中文（繁體）" => "zh-Hant",
+        "简体中文" | "簡體中文" | "中文（简体）" => "zh-Hans",
         "中文" => "zh",
         "English" | "英文" | "英語" => "en",
         "日本語" | "日文" => "ja",
@@ -579,6 +584,16 @@ impl Segmenter {
         }
     }
 
+    /// No audio has arrived for `ms` (a loopback source that went silent sends nothing):
+    /// a passage in progress ends here.
+    pub fn gap(&mut self, ms: u32) -> Vec<Seg> {
+        if self.speaking && ms >= Self::PAUSE_MS {
+            self.speaking = false;
+            return vec![Seg::Activity(Activity::End)];
+        }
+        vec![]
+    }
+
     /// `pcm` is 16-bit little-endian mono at the session rate.
     pub fn push(&mut self, pcm: Vec<u8>) -> Vec<Seg> {
         let ms = (pcm.len() as u64 * 1000 / (self.rate as u64 * 2)) as u32;
@@ -665,6 +680,17 @@ mod tests {
     }
 
     #[test]
+    fn segmenter_ends_a_passage_when_the_audio_stops_arriving() {
+        let mut s = Segmenter::new(16_000);
+        let mut all = vec![];
+        for _ in 0..20 { all.extend(s.push(tone(16_000, 100, 0.3))); }
+        assert!(s.gap(200).is_empty());
+        all.extend(s.gap(600));
+        assert_eq!(acts(&all), vec![Activity::Start, Activity::End]);
+        assert!(s.gap(2000).is_empty(), "ends once");
+    }
+
+    #[test]
     fn segmenter_cuts_speech_that_never_pauses() {
         let mut s = Segmenter::new(16_000);
         let mut all = vec![];
@@ -695,12 +721,14 @@ mod tests {
         let c = LiveConfig { model: "gemini-3.5-live-translate-preview", ..cfg(false) };
         let m = &Backend::GeminiTranslate.opening(&c)[0]["setup"];
         assert_eq!(m["model"], "models/gemini-3.5-live-translate-preview");
-        assert_eq!(m["generationConfig"]["translationConfig"]["targetLanguageCode"], "zh-TW");
+        assert_eq!(m["generationConfig"]["translationConfig"]["targetLanguageCode"], "zh-Hant");
+        assert!(m.get("inputAudioTranscription").is_some() && m.get("outputAudioTranscription").is_some());
+        assert!(m["generationConfig"].get("inputAudioTranscription").is_none(), "rejected inside generationConfig");
         assert_eq!(m["generationConfig"]["responseModalities"][0], "AUDIO");
         assert!(m.get("systemInstruction").is_none());
         assert!(Backend::GeminiTranslate.turn("x").is_empty() && Backend::GeminiTranslate.frame("x").is_empty());
         assert!(!Backend::GeminiTranslate.manual_activity());
-        assert_eq!(language_code("简体中文"), Some("zh-CN"));
+        assert_eq!(language_code("简体中文"), Some("zh-Hans"));
         assert_eq!(language_code("pt-BR"), Some("pt-BR"));
         assert_eq!(language_code("台語"), None);
     }

@@ -24,7 +24,8 @@ export interface Hotkey {
 export interface Settings {
   target_language: string;
   provider: Provider;
-  models: Record<Provider, string> & { gemini_live: string; openai_realtime: string; gemini_translate: string };
+  models: Record<Provider, string> & { gemini_live: string; openai_realtime: string; gemini_translate: string;
+    gemini_explain: string; openai_explain: string; anthropic_explain: string };
   live_idle_minutes: number;
   live_provider: Provider | null;
   hotkeys: Hotkey[];
@@ -107,6 +108,12 @@ export interface PlatformInfo { os: string; wayland: boolean; exe: string }
 export const platformInfo = () => invoke<PlatformInfo>("platform_info");
 export const autostartGet = () => invoke<boolean>("autostart_get");
 export const autostartSet = (enabled: boolean) => invoke<void>("autostart_set", { enabled });
+/** The model a task uses: 解釋 and 搜尋 may use a stronger one (empty field: the main model). */
+export function modelForTask(s: Settings, p: Provider, task: Task): string {
+  const explain = s.models[`${p}_explain` as const]?.trim();
+  return task !== "translate" && explain ? explain : s.models[p];
+}
+
 export const getSettings = () => invoke<Settings>("get_settings");
 export const saveSettings = (settings: Settings) => invoke<void>("save_settings", { settings });
 export const setApiKey = (provider: Provider, key: string) =>

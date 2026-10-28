@@ -381,6 +381,23 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
     if sources.is_empty() {
         return Err("至少要開一個來源。".into());
     }
+    let mut notice: Option<String> = None;
+    let mut sources = sources;
+    // No microphone (common on desktops): listen to what the computer plays instead.
+    if sources.contains(&live::LiveSource::Mic) && !live::has_microphone() {
+        sources.retain(|s| *s != live::LiveSource::Mic);
+        if live::SYSTEM_AUDIO_SUPPORTED {
+            if !sources.contains(&live::LiveSource::System) {
+                sources.push(live::LiveSource::System);
+            }
+            notice = Some("找不到麥克風，改聽系統聲音（電腦正在播放的聲音）。".into());
+        } else if sources.is_empty() {
+            return Err("找不到麥克風。接上麥克風後再按「開始」，或改用「螢幕」。".into());
+        } else {
+            notice = Some("找不到麥克風，這次不聽麥克風。".into());
+        }
+        let _ = app.emit_to("live", "live-changed", ());
+    }
     // Remember the choice even if starting fails, so "開始" retries it once the problem is fixed.
     *state.live_sources.lock().unwrap() = sources.clone();
     // Remembered across restarts too, so a video-watching setup does not reopen with the mic.
@@ -392,7 +409,6 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
         }
         s.clone()
     };
-    let mut sources = sources;
     let audio = sources.iter().any(|s| *s != live::LiveSource::Screen);
     let interpret = audio && !tutor && !sources.contains(&live::LiveSource::Screen);
     let engine = match pick_engine(&settings, audio, interpret) {
@@ -401,7 +417,7 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
         Err(why) if audio && sources.contains(&live::LiveSource::Screen) => {
             sources.retain(|s| *s == live::LiveSource::Screen);
             let e = pick_engine(&settings, false, false)?;
-            live_status(app, "connecting", Some(format!("{why} 這次先只看螢幕。")));
+            notice = Some(format!("{why} 這次先只看螢幕。"));
             e
         }
         Err(why) => return Err(why),
@@ -422,9 +438,12 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
             target_language: settings.target_language,
             idle_minutes: settings.live_idle_minutes,
             screen,
+            notice,
         },
     )?;
     *state.live.lock().unwrap() = Some(handle);
+    // The caption bar shows the running model.
+    let _ = app.emit_to("live", "live-changed", ());
     Ok(())
 }
 
@@ -777,7 +796,7 @@ async fn run_translation(
     let (provider, model, lang, keep) = {
         let s = state.settings.lock().unwrap();
         let p = provider.unwrap_or(s.provider);
-        (p, s.model_for(p).to_string(), s.target_language.clone(), s.save_history)
+        (p, s.model_for_task(p, task).to_string(), s.target_language.clone(), s.save_history)
     };
     let media = match input.media {
         Some(m) => Some(blocking(move || Ok(imaging::prepare(provider, m))).await?),
@@ -1086,7 +1105,7 @@ async fn test_live(app: AppHandle, state: State<'_, AppState>, args: KeyArgs) ->
     }
     match live::probe(&app, contextlens_core::live::Backend::GeminiTranslate, &interpreter, &key, &target).await {
         Ok(()) => Ok(format!("{model}，口譯 {interpreter}")),
-        Err(e) => Ok(format!("{model}；口譯模型 {interpreter} 無法使用，Live 會改用 {model}：{e}")),
+        Err(e) => Err(format!("即時模型 {model} 可以用，但口譯模型 {interpreter} 無法使用，Live 會改用 {model}。原因：{e}")),
     }
 }
 
@@ -1144,7 +1163,7 @@ async fn live_info(app: AppHandle) -> LiveInfo {
             screen: caps::for_model(p, settings.model_for(p)).image,
         })
         .collect();
-    let running = state.live.lock().unwrap().as_ref().map(|h| (h.sources.clone(), h.tutor, h.label.clone()));
+    let running = state.live.lock().unwrap().as_ref().map(|h| (h.sources.clone(), h.tutor, h.label.lock().unwrap().clone()));
     let last_sources = state.live_sources.lock().unwrap().clone();
     let screen = state.live_screen.lock().unwrap().as_ref().map(|t| t.label.clone());
     LiveInfo {

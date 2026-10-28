@@ -9,6 +9,9 @@ import { ModelPicker } from "./ModelPicker";
 
 type Note = { kind: "ok" | "err"; text: string } | null;
 
+/** Defaults for the 解釋／搜尋 model; Gemini's Flash-Lite is too weak on facts. */
+const EXPLAIN_DEFAULT: Record<Provider, string> = { gemini: "gemini-3.6-flash", openai: "", anthropic: "" };
+
 /** Providers with a real-time API, and which setting holds its model. */
 const LIVE_FIELD: Partial<Record<Provider, "gemini_live" | "openai_realtime">> = {
   gemini: "gemini_live",
@@ -65,6 +68,15 @@ function ProviderRow(props: {
           />
         </div>
       )}
+      <div className="provider-line">
+        <span className="muted" style={{ width: 40 }} title="「解釋」和「搜尋」用的模型，需要較多知識">解釋</span>
+        <ModelPicker
+          value={settings.models[`${id}_explain`] ?? ""}
+          presets={[{ id: "", label: "同翻譯模型", note: "" }, ...MODEL_PRESETS[id]]}
+          defaultId={EXPLAIN_DEFAULT[id]} ariaLabel={`${props.name} 解釋與搜尋模型`}
+          onCommit={(v) => props.commit({ ...settings, models: { ...settings.models, [`${id}_explain`]: v } })}
+        />
+      </div>
       {id === "gemini" && (
         <div className="provider-line">
           <span className="muted" style={{ width: 40 }} title="Live 只聽聲音、沒開註解時使用的口譯模型">口譯</span>

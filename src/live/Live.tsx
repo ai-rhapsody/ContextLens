@@ -192,6 +192,9 @@ export function Live() {
         <span className={`lv-dot s-${state}`} aria-hidden />
         <span className="lv-state" data-tauri-drag-region>{STATE_LABEL[state]}</span>
         {startedAt && <span className="lv-clock num" title="已開啟時間，Live 會持續計費">{clock(elapsed)}</span>}
+        {running && info?.label && (
+          <span className="lv-model" title={`正在使用 ${info.label}`} data-tauri-drag-region>{info.label.replace(/^\S+ · /, "")}</span>
+        )}
         <span className="lv-meter" aria-label="音量"><i style={{ width: `${Math.round(level * 100)}%` }} /></span>
         <span className="grow" data-tauri-drag-region />
         <div className="lv-sources" role="group" aria-label="聲音來源">
@@ -251,7 +254,7 @@ export function Live() {
                 </option>
               ))}
             </select>
-            {info.label && <span className="faint lv-label num">正在使用 {info.label}</span>}
+            {info.label && running && <span className="faint lv-label num">正在使用 {info.label}</span>}
           </div>
         )}
 

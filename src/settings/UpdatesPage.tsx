@@ -38,7 +38,7 @@ export function UpdatesPage({ state, setState }: { state: UpdateState; setState:
               <div className="grow"><span className="label">有新版本 <span className="num">{state.version}</span></span></div>
               <button className="btn primary" onClick={() => installUpdate(setState)}>下載並安裝</button>
             </div>
-            {state.notes && <pre className="release-notes">{state.notes}</pre>}
+            {state.notes && <div className="release-notes">{state.notes}</div>}
           </div>
         )}
 

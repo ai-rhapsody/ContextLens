@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  dataUrl, getSettings, hidePopup, openChat, providerInfo, PROVIDERS, runTranslation, setPopupPinned,
+  dataUrl, getSettings, hidePopup, modelForTask, openChat, providerInfo, PROVIDERS, runTranslation, setPopupPinned,
   showSettings, takePendingCapture, TASKS, type Media, type Provider, type ProviderInfo, type Settings, type Task,
 } from "../lib/api";
 import { fileToMedia, KIND_LABEL, kindOf } from "../lib/files";
@@ -341,7 +341,7 @@ export function Popup() {
         <span className="grow foot-status">
           {streaming && result ? <span>{task === "search" ? "搜尋中…" : "處理中…"} · </span> : null}
           <span className="faint">
-            {provider ? `${provider.name} · ${settings!.models[provider.id]}${override ? "（這次）" : ""}` : ""}
+            {provider ? `${provider.name} · ${modelForTask(settings!, provider.id, task)}${override ? "（這次）" : ""}` : ""}
           </span>
           {!pinned && kept && status !== "idle" && <span className="faint"> · Esc 關閉</span>}
         </span>

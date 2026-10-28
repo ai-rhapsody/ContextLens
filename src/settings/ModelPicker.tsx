@@ -11,6 +11,8 @@ export function ModelPicker(props: {
   onCommit: (v: string) => void;
   ariaLabel: string;
   placeholder?: string;
+  /** The preset marked （預設）; the first one if not given. */
+  defaultId?: string;
 }) {
   const known = props.presets.some((p) => p.id === props.value);
   const [custom, setCustom] = useState(!known);
@@ -31,7 +33,7 @@ export function ModelPicker(props: {
       >
         {props.presets.map((p, i) => (
           <option key={p.id} value={p.id}>
-            {p.label}　{p.note}{i === 0 ? "（預設）" : ""}
+            {p.label}{p.note ? `　${p.note}` : ""}{(props.defaultId === undefined ? i === 0 : p.id === props.defaultId) ? "（預設）" : ""}
           </option>
         ))}
         <option value={CUSTOM}>自訂…</option>

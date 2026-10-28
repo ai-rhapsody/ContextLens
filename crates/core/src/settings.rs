@@ -128,6 +128,10 @@ pub struct Models {
     /// Gemini's dedicated interpreter model, used when Live only listens and adds no notes.
     /// Empty: always use `gemini_live`.
     pub gemini_translate: String,
+    /// Models for 解釋 and 搜尋, which need more knowledge than translating. Empty: the main model.
+    pub gemini_explain: String,
+    pub openai_explain: String,
+    pub anthropic_explain: String,
 }
 
 impl Default for Models {
@@ -139,6 +143,10 @@ impl Default for Models {
             gemini_live: "gemini-3.8-live".into(),
             openai_realtime: "gpt-realtime-2.1-mini".into(),
             gemini_translate: "gemini-3.5-live-translate-preview".into(),
+            // Flash-Lite translates well but gets facts wrong when explaining (a spider as an insect).
+            gemini_explain: "gemini-3.6-flash".into(),
+            openai_explain: String::new(),
+            anthropic_explain: String::new(),
         }
     }
 }
@@ -273,6 +281,20 @@ impl Settings {
         }
     }
 
+    /// The model for a task: 解釋 and 搜尋 may use a stronger one than translating.
+    pub fn model_for_task(&self, provider: Provider, task: Task) -> &str {
+        let explain = match provider {
+            Provider::Gemini => &self.models.gemini_explain,
+            Provider::OpenAi => &self.models.openai_explain,
+            Provider::Anthropic => &self.models.anthropic_explain,
+        };
+        if task != Task::Translate && !explain.trim().is_empty() {
+            explain.trim()
+        } else {
+            self.model_for(provider)
+        }
+    }
+
     /// The model a provider uses for Live, if it has a real-time API.
     pub fn live_model_for(&self, provider: Provider) -> Option<&str> {
         match provider {
@@ -308,6 +330,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explaining_can_use_a_stronger_model() {
+        let mut s = Settings::default();
+        assert_eq!(s.model_for_task(Provider::Gemini, Task::Translate), "gemini-3.5-flash-lite");
+        assert_eq!(s.model_for_task(Provider::Gemini, Task::Explain), "gemini-3.6-flash");
+        assert_eq!(s.model_for_task(Provider::Anthropic, Task::Search), s.models.anthropic);
+        s.models.gemini_explain.clear();
+        assert_eq!(s.model_for_task(Provider::Gemini, Task::Search), "gemini-3.5-flash-lite");
+    }
 
     #[test]
     fn older_settings_get_a_live_hotkey_once() {
