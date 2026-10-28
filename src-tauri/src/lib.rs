@@ -496,8 +496,13 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
             Source::Selection => {
                 // Let the user's fingers leave the hotkey before we press Copy.
                 let _ = blocking(|| Ok(std::thread::sleep(std::time::Duration::from_millis(150)))).await;
-                // Ask where the selection is before Copy, while its app still has the focus.
-                let read = blocking(|| Ok((capture::selection_span(), capture::selected_text()))).await;
+                // Ask where the selection is alongside Copy, while its app still has the focus.
+                let read = blocking(|| {
+                    let span = capture::begin_selection_span();
+                    let text = capture::selected_text();
+                    Ok((span(), text))
+                })
+                .await;
                 let (span, text) = read.unwrap_or_else(|e| (None, Err(e)));
                 let capture = match text {
                     Ok(text) => Capture { text, tutor, task, ..Default::default() },

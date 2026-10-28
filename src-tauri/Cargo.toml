@@ -38,4 +38,4 @@ tauri-plugin-autostart = "2"
 # GetAsyncKeyState: wait for the hotkey's modifiers to be released before pressing Copy.
 windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 # UI Automation: where the selection is, so the popup opens beneath it.
-windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Accessibility"] }
+windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

@@ -105,21 +105,28 @@ pub struct Span {
     pub bottom: f64,
 }
 
-/// Lets the popup open beneath the whole selection rather than under the cursor, which a
-/// triple-click leaves in the middle of the paragraph. `None` when the app does not say.
+/// How long the popup may wait to learn where the selection is.
 #[cfg(target_os = "windows")]
-pub fn selection_span() -> Option<Span> {
-    // UI Automation can stall on a busy app; the cursor is a fine fallback.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(uia::selection_span());
-    });
-    rx.recv_timeout(Duration::from_millis(300)).ok().flatten()
-}
+const SPAN_WAIT: Duration = Duration::from_millis(500);
 
-#[cfg(not(target_os = "windows"))]
-pub fn selection_span() -> Option<Span> {
-    None
+/// Starts finding where the selection is, while Copy runs; the returned call collects the
+/// answer. Lets the popup open beneath the whole selection rather than under the cursor,
+/// which a triple-click leaves in the middle of the paragraph. `None` when the app does not say.
+pub fn begin_selection_span() -> impl FnOnce() -> Option<Span> {
+    #[cfg(target_os = "windows")]
+    {
+        // UI Automation can stall on a busy app; the cursor is a fine fallback.
+        let deadline = Instant::now() + SPAN_WAIT;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(uia::selection_span(deadline));
+        });
+        move || rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok().flatten()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        || None
+    }
 }
 
 /// The span covering every line rectangle ([left, top, width, height]) that has a size.
@@ -134,16 +141,21 @@ fn span_of(lines: &[[f64; 4]]) -> Option<Span> {
 #[cfg(target_os = "windows")]
 mod uia {
     use super::Span;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Foundation::POINT;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, SAFEARRAY,
     };
     use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetUBound, SafeArrayUnaccessData};
-    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern, UIA_TextPatternId,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-    pub fn selection_span() -> Option<Span> {
+    pub fn selection_span(deadline: Instant) -> Option<Span> {
         unsafe {
             let initialised = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-            let span = focused_selection();
+            let span = poll(deadline);
             if initialised {
                 CoUninitialize();
             }
@@ -151,10 +163,43 @@ mod uia {
         }
     }
 
-    /// The selection in the focused control, for apps that expose it (browsers, Word, edit boxes).
-    unsafe fn focused_selection() -> Option<Span> {
+    /// Chrome builds its accessibility tree only once a client asks, so the first answers
+    /// can be empty: ask again until the deadline.
+    unsafe fn poll(deadline: Instant) -> Option<Span> {
         let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
-        let text: IUIAutomationTextPattern = uia.GetFocusedElement().ok()?.GetCurrentPatternAs(UIA_TextPatternId).ok()?;
+        loop {
+            if let Some(span) = find(&uia) {
+                return Some(span);
+            }
+            if Instant::now() + Duration::from_millis(60) >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(60));
+        }
+    }
+
+    /// The selection in the focused control, else in the one under the cursor.
+    unsafe fn find(uia: &IUIAutomation) -> Option<Span> {
+        let focused = uia.GetFocusedElement().ok();
+        let mut at = POINT::default();
+        let under = GetCursorPos(&mut at).ok().and_then(|_| uia.ElementFromPoint(at).ok());
+        [focused, under].into_iter().flatten().find_map(|e| selection_in(uia, e))
+    }
+
+    /// The selection of the nearest element, from `e` up, that holds text (a web page's
+    /// document, a Word page, an edit box).
+    unsafe fn selection_in(uia: &IUIAutomation, mut e: IUIAutomationElement) -> Option<Span> {
+        let walker = uia.RawViewWalker().ok()?;
+        for _ in 0..12 {
+            if let Ok(text) = e.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+                return selection(&text);
+            }
+            e = walker.GetParentElement(&e).ok()?;
+        }
+        None
+    }
+
+    unsafe fn selection(text: &IUIAutomationTextPattern) -> Option<Span> {
         let ranges = text.GetSelection().ok()?;
         let mut lines = Vec::new();
         for i in 0..ranges.Length().ok()? {

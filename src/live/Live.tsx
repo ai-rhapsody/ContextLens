@@ -264,7 +264,13 @@ export function Live() {
           </div>
         )}
 
-        {message && <div className={`lv-msg${state === "error" ? " err" : ""}`} role="status">{message}</div>}
+        {message && (
+          // Stays in view while the captions scroll; closing it only hides it.
+          <div className={`lv-msg sticky${state === "error" ? " err" : ""}`} role="status">
+            <span className="grow">{message}</span>
+            <button className="btn quiet" onClick={() => setMessage(null)} aria-label="關閉提示">✕</button>
+          </div>
+        )}
 
         {sources.includes("screen") && info?.screen && (
           <div className="lv-screen">
