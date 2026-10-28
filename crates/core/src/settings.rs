@@ -220,7 +220,7 @@ impl Default for Settings {
             start_in_tray: false,
             audio_only_models: vec![],
             live_sources: vec![LiveSource::Mic],
-            own_language_to_english: false,
+            own_language_to_english: true,
             welcome_seen: false,
             live_hotkey_added: false,
         }
