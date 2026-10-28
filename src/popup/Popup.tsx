@@ -38,6 +38,7 @@ export function Popup() {
   const [blocked, setBlocked] = useState<Blocked | null>(null);
   const [override, setOverride] = useState<Provider | null>(null); // this request only
   const [convo, setConvo] = useState<number | null>(null); // follow-ups go to this conversation
+  const [fallback, setFallback] = useState<string | null>(null); // search answered without the web
   const thread = useThread(convo);
   const bodyRef = useRef<HTMLDivElement>(null);
   useStickToBottom(bodyRef, thread.items);
@@ -65,6 +66,7 @@ export function Popup() {
     setOverride(via);
     setBlocked(null);
     setConvo(null);
+    setFallback(null);
     thread.reset();
 
     // Check the capability table before sending, and offer providers that can read this input.
@@ -90,6 +92,7 @@ export function Popup() {
       if (e.kind === "delta") setResult((r) => r + e.text);
       else if (e.kind === "source") setSources((s) => [...s, { title: e.title, url: e.url }]);
       else if (e.kind === "conversation") setConvo(e.id);
+      else if (e.kind === "offline") { setFallback(e.reason); setResult(""); }
       else if (e.kind === "done") setStatus("done");
       else if (e.kind === "error") fail(e.message);
     }, via).catch((err) => id === run.current && fail(String(err)));
@@ -318,8 +321,8 @@ export function Popup() {
           <p className={`result${streaming ? " caret" : ""}`}>{result}</p>
         )}
 
-        {offline && status !== "error" && (result || streaming) && (
-          <p className="offline faint">這個模型無法上網，以下是模型本身的知識，可能不是最新資訊。</p>
+        {(offline || fallback) && status !== "error" && (result || streaming) && (
+          <p className="offline faint">{fallback ?? "這個模型無法上網，以下是模型本身的知識，可能不是最新資訊。"}</p>
         )}
 
         {status !== "error" && hasHeadings && <Answer text={result} task={task} streaming={streaming} />}

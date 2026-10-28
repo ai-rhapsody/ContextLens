@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { inline } from "../lib/Rich";
 import { listen } from "@tauri-apps/api/event";
 import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liveStar, liveStart, liveStop, PROVIDERS, showSettings,
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
-type Turn = { input: string; output: string; starred?: boolean };
+/** A caption line, or (with `divider`) the start of a later session. */
+type Turn = { input: string; output: string; starred?: boolean; divider?: string };
 
 const STATE_LABEL: Record<State, string> = {
   idle: "未開始", connecting: "連線中…", listening: "聆聽中", reconnecting: "重新連線中…",
@@ -23,8 +25,8 @@ function Output({ text }: { text: string }) {
     <>
       {text.split("\n").filter((l) => l.trim()).map((line, i) =>
         line.trim().startsWith(NOTE)
-          ? <p className="lv-note" key={i}>{line.trim()}</p>
-          : <p className="lv-out" key={i}>{line}</p>,
+          ? <p className="lv-note" key={i}>{inline(line.trim())}</p>
+          : <p className="lv-out" key={i}>{inline(line)}</p>,
       )}
     </>
   );
@@ -44,6 +46,7 @@ export function Live() {
   const body = useRef<HTMLDivElement>(null);
   const cur = useRef<Turn>({ input: "", output: "" }); // mirrors `current` for the event handler
   const stick = useRef(true); // follow new captions unless the user scrolled up
+  const lastState = useRef<State>("idle");
 
   const refresh = useCallback(async () => {
     const i = await liveInfo();
@@ -57,6 +60,13 @@ export function Live() {
     refresh();
     const unLive = listen<LiveEvent>("live", ({ payload: e }) => {
       if (e.kind === "status") {
+        // A new session (not a reconnect or a source change): set the old captions apart.
+        const was = lastState.current;
+        lastState.current = e.state;
+        if (e.state === "connecting" && ["idle", "stopped", "paused", "error"].includes(was)) {
+          const at = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
+          setTurns((t) => (t.length && !t[t.length - 1].divider ? [...t, { input: "", output: "", divider: at }] : t));
+        }
         setState(e.state);
         setMessage(e.message);
         if (e.state === "listening") setStartedAt((t) => t ?? Date.now());
@@ -213,6 +223,10 @@ export function Live() {
               title={!effective.length ? "先開一個來源" : undefined}
             >開始</button>
           )}
+        <button
+          className="btn quiet" onClick={() => { setTurns([]); cur.current = { input: "", output: "" }; setCurrent(cur.current); }}
+          disabled={!turns.length && !current.input && !current.output} title="清除字幕（已存進歷史紀錄的不受影響）"
+        >清除</button>
         <button className="btn quiet" onClick={() => closeLive()} aria-label="關閉並停止" title="關閉並停止（Esc）">✕</button>
       </div>
 
@@ -269,7 +283,9 @@ export function Live() {
         )}
         {empty && state === "listening" && <p className="lv-hint">正在聆聽…說話或播放聲音就會開始翻譯。</p>}
 
-        {turns.map((t, i) => (
+        {turns.map((t, i) => t.divider ? (
+          <div className="lv-divider" key={i} role="separator"><span>{t.divider} 開始</span></div>
+        ) : (
           <div className={`lv-turn${t.starred ? " starred" : ""}`} key={i}>
             {t.input && <p className="lv-in">{t.input.trim()}</p>}
             <Output text={t.output} />

@@ -63,6 +63,8 @@ enum StreamEvent {
     Source { title: String, url: String },
     /// The answer is complete and can be followed up under this id.
     Conversation { id: u64 },
+    /// Search fell back to the model's own knowledge; `reason` says why.
+    Offline { reason: String },
     /// The question a follow-up is answering (shown above its answer).
     Question { text: String },
     Done,
@@ -95,12 +97,26 @@ fn place_near_cursor(app: &AppHandle, win: &WebviewWindow) {
         .or_else(|| app.primary_monitor().ok().flatten());
     if let Some(mon) = monitor {
         let configured = app.state::<AppState>().settings.lock().unwrap().popup_size.unwrap_or([440, 420]);
-        let (w, h) = outer_size_or(win, configured, mon.scale_factor());
+        let scale = mon.scale_factor();
+        let (w, h) = outer_size_or(win, configured, scale);
         let (mp, ms) = (mon.position(), mon.size());
+        let (top, bottom) = (mp.y as f64 + 8.0, mp.y as f64 + ms.height as f64 - 8.0);
+        // The selection ends at the cursor: open below its line, or above it when there is no
+        // room, but never clamp onto the line itself and cover the text being translated.
+        let below = cursor.y + 28.0 * scale;
+        let above = cursor.y - 28.0 * scale - h;
+        y = if below + h <= bottom {
+            below
+        } else if above >= top {
+            above
+        } else if bottom - cursor.y >= cursor.y - top {
+            bottom - h
+        } else {
+            top
+        };
         let max_x = mp.x as f64 + ms.width as f64 - w - 8.0;
-        let max_y = mp.y as f64 + ms.height as f64 - h - 8.0;
         x = x.min(max_x).max(mp.x as f64 + 8.0);
-        y = y.min(max_y).max(mp.y as f64 + 8.0);
+        y = y.max(top);
     }
     let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
@@ -354,7 +370,15 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
     }
     // Remember the choice even if starting fails, so "開始" retries it once the problem is fixed.
     *state.live_sources.lock().unwrap() = sources.clone();
-    let settings = state.settings.lock().unwrap().clone();
+    // Remembered across restarts too, so a video-watching setup does not reopen with the mic.
+    let settings = {
+        let mut s = state.settings.lock().unwrap();
+        if s.live_sources != sources {
+            s.live_sources = sources.clone();
+            let _ = store::save(app, &s);
+        }
+        s.clone()
+    };
     let mut sources = sources;
     let audio = sources.iter().any(|s| *s != live::LiveSource::Screen);
     let engine = match pick_engine(&settings, audio) {
@@ -395,16 +419,24 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
 fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let gs = app.global_shortcut();
     gs.unregister_all().map_err(|e| e.to_string())?;
+    // One hotkey taken by another app must not cost the others.
+    let mut failed = Vec::new();
     for hk in &settings.hotkeys {
         let hotkey = hk.clone();
-        gs.on_shortcut(hk.accelerator.as_str(), move |app, _, event| {
+        let r = gs.on_shortcut(hk.accelerator.as_str(), move |app, _, event| {
             if event.state == ShortcutState::Pressed {
                 trigger(app.clone(), hotkey.clone());
             }
-        })
-        .map_err(|e| format!("無法註冊熱鍵 {}：{e}", hk.accelerator))?;
+        });
+        if let Err(e) = r {
+            failed.push(format!("{}（{e}）", hk.accelerator));
+        }
     }
-    Ok(())
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("無法註冊熱鍵 {}，可能已被其他程式使用。", failed.join("、")))
+    }
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -490,6 +522,10 @@ fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings)
         settings.popup_size = current.popup_size;
         settings.popup_pinned = current.popup_pinned;
         settings.popup_pos = current.popup_pos;
+        // Also owned elsewhere: the caption bar and Live sessions.
+        settings.live_provider = current.live_provider;
+        settings.live_sources = current.live_sources.clone();
+        settings.audio_only_models = current.audio_only_models.clone();
     }
     // Register first: if a hotkey is taken by another app, nothing is saved.
     if let Err(e) = register_hotkeys(&app, &settings) {
@@ -680,16 +716,30 @@ async fn stream(
     model: &str,
     req: &ChatRequest,
     gen: Option<u64>,
-    mut emit: impl FnMut(Delta) -> bool,
+    emit: impl FnMut(Delta) -> bool,
 ) -> Result<(), String> {
+    stream_raw(state, provider, model, req, gen, emit).await.map_err(|e| e.to_string())
+}
+
+/// `stream`, keeping the error's kind so a caller can react to it (e.g. a rate limit).
+async fn stream_raw(
+    state: &AppState,
+    provider: Provider,
+    model: &str,
+    req: &ChatRequest,
+    gen: Option<u64>,
+    mut emit: impl FnMut(Delta) -> bool,
+) -> Result<(), contextlens_core::ProviderError> {
     let key = secrets::get(provider).ok_or_else(|| {
-        format!("還沒設定 {} 的 API 金鑰。到「模型與金鑰」貼上金鑰。", provider.display_name())
+        contextlens_core::ProviderError::Unsupported(format!(
+            "還沒設定 {} 的 API 金鑰。到「模型與金鑰」貼上金鑰。",
+            provider.display_name()
+        ))
     })?;
     contextlens_core::stream_completion(&state.http, provider, model, &key, req, |t| {
         gen.map_or(true, |g| state.generation.load(Ordering::SeqCst) == g) && emit(t)
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -720,11 +770,14 @@ async fn run_translation(
         None => None,
     };
     let web = contextlens_core::can_search(provider, &model);
-    let req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
+    let mut req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
+    if task == Task::Translate && state.settings.lock().unwrap().own_language_to_english {
+        req.system.push_str(&prompt::own_language_to_english(&lang));
+    }
 
     let mut full = String::new();
     let mut sources: Vec<(String, String)> = Vec::new();
-    let result = stream(&state, provider, &model, &req, Some(gen), |d| match d {
+    let mut result = stream_raw(&state, provider, &model, &req, Some(gen), |d| match d {
         Delta::Text(t) => {
             full.push_str(&t);
             on_event.send(StreamEvent::Delta { text: t }).is_ok()
@@ -738,6 +791,23 @@ async fn run_translation(
         }
     })
     .await;
+    // Web search (Gemini's Google grounding) is often unavailable on free keys and answers
+    // 429. Answer from the model's own knowledge instead, and say so.
+    if req.web_search && full.is_empty() && result.as_ref().is_err_and(|e| e.is_rate_limited()) {
+        let _ = on_event.send(StreamEvent::Offline {
+            reason: "這次無法上網搜尋（免費金鑰通常不支援搜尋，或已超過搜尋額度），以下是模型本身的知識，可能不是最新資訊。".into(),
+        });
+        req = prompt::build_task(task, tutor, &input.text, req.media.first().cloned(), &lang, false);
+        result = stream_raw(&state, provider, &model, &req, Some(gen), |d| match d {
+            Delta::Text(t) => {
+                full.push_str(&t);
+                on_event.send(StreamEvent::Delta { text: t }).is_ok()
+            }
+            Delta::Source { .. } => true,
+        })
+        .await;
+    }
+    let result = result.map_err(|e| e.to_string());
     // A newer request owns the popup now; stay silent and keep nothing.
     if state.generation.load(Ordering::SeqCst) != gen {
         return Ok(());
@@ -981,6 +1051,21 @@ fn live_star(app: AppHandle, state: State<AppState>, input: String, output: Stri
     Ok(id)
 }
 
+/// Opens a real Live session with the provider's real-time model and waits for one reply.
+#[tauri::command]
+async fn test_live(app: AppHandle, state: State<'_, AppState>, args: KeyArgs) -> Result<String, String> {
+    let (model, target) = {
+        let s = state.settings.lock().unwrap();
+        (s.live_model_for(args.provider).map(String::from), s.target_language.clone())
+    };
+    let backend = contextlens_core::live::Backend::for_provider(args.provider)
+        .ok_or_else(|| format!("{} 沒有即時 API。", args.provider.display_name()))?;
+    let model = model.filter(|m| !m.trim().is_empty()).ok_or("先選一個即時模型。")?;
+    let key = secrets::get(args.provider).ok_or("先貼上並儲存 API 金鑰。")?;
+    live::probe(&app, backend, &model, &key, &target).await?;
+    Ok(model)
+}
+
 /// Sends a tiny request with the stored key so the settings page can say "works" or why not.
 #[tauri::command]
 async fn test_provider(state: State<'_, AppState>, args: KeyArgs) -> Result<String, String> {
@@ -1156,6 +1241,7 @@ pub fn run() {
             autostart_get,
             autostart_set,
             platform_info,
+            test_live,
             save_settings,
             set_api_key,
             delete_api_key,
@@ -1200,7 +1286,11 @@ pub fn run() {
                 live: Mutex::new(None),
                 chat_pending: Mutex::new(None),
                 convos: Mutex::new(VecDeque::new()),
-                live_sources: Mutex::new(vec![live::LiveSource::Mic]),
+                live_sources: Mutex::new(if settings.live_sources.is_empty() {
+                    vec![live::LiveSource::Mic]
+                } else {
+                    settings.live_sources.clone()
+                }),
                 live_screen: Mutex::new(None),
                 http: contextlens_core::http_client(),
             });

@@ -35,6 +35,11 @@ export interface Settings {
   close_to_tray: boolean;
   minimize_to_tray: boolean;
   start_in_tray: boolean;
+  audio_only_models: string[];
+  live_sources: LiveSource[];
+  own_language_to_english: boolean;
+  welcome_seen: boolean;
+  live_hotkey_added: boolean;
 }
 
 export interface Media {
@@ -88,6 +93,7 @@ export type StreamEvent =
   | { kind: "source"; title: string; url: string }
   | { kind: "conversation"; id: number }
   | { kind: "question"; text: string }
+  | { kind: "offline"; reason: string }
   | { kind: "done" }
   | { kind: "error"; message: string };
 
@@ -106,6 +112,7 @@ export const saveSettings = (settings: Settings) => invoke<void>("save_settings"
 export const setApiKey = (provider: Provider, key: string) =>
   invoke<void>("set_api_key", { args: { provider }, key });
 export const deleteApiKey = (provider: Provider) => invoke<void>("delete_api_key", { args: { provider } });
+export const testLive = (provider: Provider) => invoke<string>("test_live", { args: { provider } });
 export const testProvider = (provider: Provider) => invoke<string>("test_provider", { args: { provider } });
 export const takePendingCapture = () => invoke<Capture | null>("take_pending_capture");
 export const hidePopup = () => invoke<void>("hide_popup");

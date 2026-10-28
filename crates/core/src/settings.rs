@@ -165,6 +165,16 @@ pub struct Settings {
     pub minimize_to_tray: bool,
     /// Start with only the tray icon, no settings window.
     pub start_in_tray: bool,
+    /// Live models that refused text replies, so sessions ask them for audio from the start.
+    pub audio_only_models: Vec<String>,
+    /// Live sources last used, so the caption bar opens with them.
+    pub live_sources: Vec<LiveSource>,
+    /// Text already in the user's language is translated into English (else left as is).
+    pub own_language_to_english: bool,
+    /// The settings window's first-run card was dismissed.
+    pub welcome_seen: bool,
+    /// The default Live hotkey was added once; removing it later keeps it removed.
+    pub live_hotkey_added: bool,
 }
 
 impl Default for Settings {
@@ -185,6 +195,7 @@ impl Default for Settings {
                 hk("default-translate", "CommandOrControl+Shift+T", Source::Selection, false),
                 hk("default-tutor", "CommandOrControl+Shift+E", Source::Selection, true),
                 hk("default-screen", "CommandOrControl+Alt+S", Source::Screen, false),
+                hk(DEFAULT_LIVE_ID, DEFAULT_LIVE_KEY, Source::Live, false),
             ],
             live_idle_minutes: 3,
             live_provider: None,
@@ -195,6 +206,11 @@ impl Default for Settings {
             close_to_tray: true,
             minimize_to_tray: true,
             start_in_tray: false,
+            audio_only_models: vec![],
+            live_sources: vec![LiveSource::Mic],
+            own_language_to_english: false,
+            welcome_seen: false,
+            live_hotkey_added: false,
         }
     }
 }
@@ -209,8 +225,27 @@ const OLD_DEFAULTS: &[&str] = &[
     "gpt-realtime",
 ];
 
+const DEFAULT_LIVE_ID: &str = "default-live";
+const DEFAULT_LIVE_KEY: &str = "CommandOrControl+Alt+L";
+
 impl Settings {
     pub fn upgrade_defaults(&mut self) {
+        // Earlier versions had no Live hotkey, leaving Live reachable only from the tray menu.
+        if !self.live_hotkey_added {
+            self.live_hotkey_added = true;
+            let has_live = self.hotkeys.iter().any(|h| h.source == Source::Live);
+            let taken = self.hotkeys.iter().any(|h| h.accelerator == DEFAULT_LIVE_KEY);
+            if !has_live && !taken {
+                self.hotkeys.push(Hotkey {
+                    id: DEFAULT_LIVE_ID.into(),
+                    accelerator: DEFAULT_LIVE_KEY.into(),
+                    source: Source::Live,
+                    task: Task::Translate,
+                    tutor: false,
+                    live_sources: vec![],
+                });
+            }
+        }
         let new = Models::default();
         let m = &mut self.models;
         for (field, fresh) in [
@@ -271,6 +306,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn older_settings_get_a_live_hotkey_once() {
+        let mut s: Settings = serde_json::from_str(
+            r#"{"hotkeys":[{"id":"a","accelerator":"CommandOrControl+Shift+T","source":"selection","task":"translate","tutor":false}]}"#,
+        )
+        .unwrap();
+        s.upgrade_defaults();
+        assert!(s.hotkeys.iter().any(|h| h.source == Source::Live));
+        s.hotkeys.retain(|h| h.source != Source::Live);
+        s.upgrade_defaults();
+        assert!(!s.hotkeys.iter().any(|h| h.source == Source::Live), "a removed Live hotkey stays removed");
+        assert_eq!(Settings::default().hotkeys.iter().filter(|h| h.source == Source::Live).count(), 1);
+    }
+
+    #[test]
     fn older_settings_keep_running_in_the_tray() {
         let s: Settings = serde_json::from_str(r#"{"target_language":"English"}"#).unwrap();
         assert!(s.close_to_tray && s.minimize_to_tray && !s.start_in_tray);
@@ -288,7 +337,7 @@ mod tests {
     fn partial_json_fills_defaults() {
         let s: Settings = serde_json::from_str(r#"{"save_history":false}"#).unwrap();
         assert!(!s.save_history);
-        assert_eq!(s.hotkeys.len(), 3);
+        assert_eq!(s.hotkeys.len(), 4);
         assert_eq!(s.models.anthropic, "claude-opus-5-5");
         assert_eq!(s.models.gemini, "gemini-3.5-flash-lite");
         assert_eq!(s.models.gemini_live, "gemini-3.8-live");

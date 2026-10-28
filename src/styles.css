@@ -349,3 +349,17 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .soon.wayland p { margin: 0 0 6px; }
 .soon.wayland ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
 .soon.wayland code { font-size: 12px; }
+.sec h3, .ex-a h3, .answer h3, .h-detail h3 { margin: 10px 0 2px; font-size: 14px; line-height: 20px; font-weight: 600; }
+.sec ol, .ex-a ol, .answer.plain ol { margin: 0; padding-left: 20px; }
+.sec ol li + li { margin-top: 3px; }
+.nav .grow { flex: 1; }
+.nav button.nav-live { justify-content: space-between; color: var(--text); border: 1px solid var(--control); background: var(--surface); }
+.nav button.nav-live:hover { background: var(--active); }
+.nav-live kbd { font-size: 11px; line-height: 16px; }
+.welcome { display: flex; gap: 16px; align-items: flex-end; padding: 16px var(--card-pad); }
+.welcome-body { flex: 1; min-width: 0; }
+.welcome-body .hint { margin: 4px 0 8px; color: var(--muted); font-size: 13px; }
+.welcome-body ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; }
+.welcome-actions { display: flex; gap: 8px; flex: none; }
+.lv-divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; }
+.lv-divider::before, .lv-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }

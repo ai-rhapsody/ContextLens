@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  deleteApiKey, liveSetProvider, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider,
+  deleteApiKey, liveSetProvider, testLive, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider,
   type ProviderInfo, type Settings,
 } from "../lib/api";
 import { LIVE_PRESETS, MODEL_PRESETS } from "../lib/models";
@@ -93,6 +93,16 @@ function ProviderRow(props: {
             setNote({ kind: "ok", text: `連線成功（${model}）。` });
           })}
         >測試</button>
+        {LIVE_FIELD[id] && (
+          <button
+            className="btn" disabled={busy || !hasKey} title="真的開一條即時連線，送一句話，確認即時模型能用"
+            onClick={() => guard(async () => {
+              setNote({ kind: "ok", text: "正在連線即時模型…" });
+              const model = await testLive(id);
+              setNote({ kind: "ok", text: `Live 連線成功（${model}）。` });
+            })}
+          >測試 Live</button>
+        )}
         <button
           className="btn quiet danger" disabled={busy || !hasKey}
           onClick={() => guard(async () => { await deleteApiKey(id); props.refresh(); setNote(null); })}

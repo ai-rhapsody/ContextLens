@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, saveSettings, type Settings } from "../lib/api";
+import { getSettings, openLive, saveSettings, type Settings } from "../lib/api";
+import { prettyAccelerator } from "../lib/hotkey";
 import { checkForUpdate, type UpdateState } from "../lib/updater";
 import { GeneralPage } from "./GeneralPage";
 import { HistoryPage } from "./HistoryPage";
@@ -61,6 +62,7 @@ export function SettingsApp() {
     );
   }
 
+  const liveKey = settings.hotkeys.find((h) => h.source === "live")?.accelerator;
   return (
     <div className="shell">
       <nav className="nav" aria-label="設定">
@@ -71,9 +73,17 @@ export function SettingsApp() {
             {p.id === "updates" && update.phase === "available" && <span className="flag">有新版</span>}
           </button>
         ))}
+        <span className="grow" />
+        <button className="nav-live" onClick={() => openLive()} title="開啟 Live 字幕列">
+          開啟 Live
+          {liveKey && <kbd>{prettyAccelerator(liveKey)}</kbd>}
+        </button>
       </nav>
       <main className="canvas">
         <div className="page">
+          {!settings.welcome_seen && (
+            <Welcome settings={settings} onDone={() => commit({ ...settings, welcome_seen: true })} onHotkeys={() => setPage("hotkeys")} />
+          )}
           {page === "general" && <GeneralPage settings={settings} commit={commit} />}
           {page === "models" && <ModelsPage settings={settings} commit={commit} />}
           {page === "hotkeys" && <HotkeysPage settings={settings} commit={commit} />}
@@ -82,6 +92,33 @@ export function SettingsApp() {
           <div className={`status-line ${status?.kind ?? ""}`} role="status">{status?.text}</div>
         </div>
       </main>
+    </div>
+  );
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  selection: "翻譯反白的文字", screen: "截圖", clipboard_image: "剪貼簿圖片", live: "開關 Live 即時翻譯",
+};
+
+/** First run: where ContextLens lives once this window closes, and how to reach each part. */
+function Welcome({ settings, onDone, onHotkeys }: { settings: Settings; onDone: () => void; onHotkeys: () => void }) {
+  return (
+    <div className="panel welcome">
+      <div className="welcome-body">
+        <div className="label">ContextLens 會在背景待命</div>
+        <p className="hint">
+          關掉這個視窗後，ContextLens 留在右下角的系統匣（Windows 可能收在 ^ 裡），用熱鍵叫出來：
+        </p>
+        <ul>
+          {settings.hotkeys.map((h) => (
+            <li key={h.id}><kbd>{prettyAccelerator(h.accelerator)}</kbd> {SOURCE_LABEL[h.source] ?? h.source}{h.tutor ? "（教學）" : ""}</li>
+          ))}
+        </ul>
+      </div>
+      <div className="welcome-actions">
+        <button className="btn" onClick={onHotkeys}>改熱鍵</button>
+        <button className="btn primary" onClick={onDone}>知道了</button>
+      </div>
     </div>
   );
 }

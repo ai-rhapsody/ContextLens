@@ -64,16 +64,17 @@ pub enum LiveUi {
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Gemini models that refused text replies; later sessions ask them for audio straight away.
-static AUDIO_ONLY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-fn audio_only(model: &str) -> bool {
-    AUDIO_ONLY.lock().unwrap().iter().any(|m| m == model)
+/// Kept in the settings, so the first session after a restart does not fail again.
+fn audio_only(app: &AppHandle, model: &str) -> bool {
+    app.state::<AppState>().settings.lock().unwrap().audio_only_models.iter().any(|m| m == model)
 }
 
-fn mark_audio_only(model: &str) {
-    let mut list = AUDIO_ONLY.lock().unwrap();
-    if !list.iter().any(|m| m == model) {
-        list.push(model.to_string());
+pub(crate) fn mark_audio_only(app: &AppHandle, model: &str) {
+    let state = app.state::<AppState>();
+    let mut s = state.settings.lock().unwrap();
+    if !s.audio_only_models.iter().any(|m| m == model) {
+        s.audio_only_models.push(model.to_string());
+        let _ = store::save(app, &s);
     }
 }
 
@@ -372,6 +373,7 @@ enum Outcome {
 
 async fn session(
     backend: Backend,
+    manual: bool,
     endpoint: (String, Vec<(&'static str, String)>),
     opening: Vec<serde_json::Value>,
     outgoing: &mut mpsc::Receiver<Outgoing>,
@@ -398,6 +400,7 @@ async fn session(
         }
     }
     let mut started = false;
+    let mut segmenter = live::Segmenter::new(backend.sample_rate());
     let setup_deadline = tokio::time::sleep(Duration::from_secs(15));
     tokio::pin!(setup_deadline);
     loop {
@@ -411,6 +414,14 @@ async fn session(
             }
             next = outgoing.recv(), if started => {
                 let msgs = match next {
+                    Some(Outgoing::Audio(pcm)) if manual => segmenter
+                        .push(pcm)
+                        .into_iter()
+                        .flat_map(|seg| match seg {
+                            live::Seg::Activity(a) => backend.activity(a),
+                            live::Seg::Audio(pcm) => backend.audio(&pcm),
+                        })
+                        .collect(),
                     Some(Outgoing::Audio(pcm)) => backend.audio(&pcm),
                     Some(Outgoing::Frame(jpeg)) => backend.frame(&jpeg),
                     Some(Outgoing::Turn(text)) => backend.turn(text),
@@ -456,6 +467,82 @@ async fn session(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Opens a real session, says one short sentence and waits for the reply, so a model or key
+/// that would fail in Live is caught from the settings page. Falls back to audio replies the
+/// same way a session does, and remembers it.
+pub async fn probe(app: &AppHandle, backend: Backend, model: &str, api_key: &str, target: &str) -> Result<(), String> {
+    let mut text_output = !audio_only(app, model);
+    loop {
+        let opening = backend.opening(&LiveConfig {
+            model,
+            target_language: target,
+            tutor: false,
+            text_output,
+            resume_handle: None,
+            screen: ScreenMode::None,
+            manual_activity: backend.manual_activity(),
+        });
+        let (tx, mut rx) = mpsc::channel(4);
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let replied = Arc::new(AtomicBool::new(false));
+        let (r, d) = (ready.clone(), replied.clone());
+        let feeder = tauri::async_runtime::spawn(async move {
+            r.notified().await;
+            let _ = tx.send(Outgoing::Turn("Good morning, everyone.")).await;
+            // Enough for a reply, or for a model that refuses text to say so.
+            tokio::time::sleep(Duration::from_secs(8)).await;
+            let _ = stop_tx.send(true);
+        });
+        let stopper = stop_rx.clone();
+        let mut setup = false;
+        let mut on = |ev: ServerEvent| match ev {
+            ServerEvent::SetupComplete => {
+                setup = true;
+                ready.notify_one();
+            }
+            ServerEvent::Output(_) | ServerEvent::TurnComplete => {
+                d.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        };
+        // Stop as soon as the reply has started.
+        let early = {
+            let replied = replied.clone();
+            let mut stopper = stopper;
+            async move {
+                loop {
+                    if replied.load(Ordering::SeqCst) || *stopper.borrow() {
+                        return;
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                        _ = stopper.changed() => {}
+                    }
+                }
+            }
+        };
+        let outcome = tokio::select! {
+            o = session(backend, backend.manual_activity(), backend.endpoint(api_key, model), opening, &mut rx, &mut stop_rx, &mut on) => o,
+            _ = early => Outcome::Stopped,
+        };
+        feeder.abort();
+        match outcome {
+            Outcome::Stopped | Outcome::Reconnect if setup => return Ok(()),
+            Outcome::Stopped | Outcome::Reconnect => return Err("即時服務沒有回應。".into()),
+            Outcome::Refused(r) | Outcome::Failed(r)
+                if backend == Backend::GeminiLive
+                    && text_output
+                    && (live::mentions_modality(&r) || (!setup && live::should_retry_with_audio(&r))) =>
+            {
+                text_output = false;
+                mark_audio_only(app, model);
+            }
+            Outcome::Refused(r) | Outcome::Failed(r) => return Err(live::explain_error(&r, model)),
         }
     }
 }
@@ -658,8 +745,10 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
             Engine::Realtime { backend, model, api_key } => {
                 let backend = *backend;
                 let mut resume: Option<String> = None;
-                let mut text_output = !audio_only(model);
+                let mut text_output = !audio_only(&app, model);
                 let mut reconnects = 0u32;
+                let mut fresh_retry = false;
+                let mut manual = backend.manual_activity();
                 loop {
                     let opening = backend.opening(&LiveConfig {
                         model,
@@ -668,6 +757,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         text_output,
                         resume_handle: resume.as_deref(),
                         screen: screen_mode,
+                        manual_activity: manual,
                     });
                     let mut announced = false;
                     let ui = app.clone();
@@ -701,7 +791,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         ServerEvent::GoAway | ServerEvent::Error(_) => {}
                     };
                     let endpoint = backend.endpoint(api_key, model);
-                    match session(backend, endpoint, opening, &mut out_rx, &mut stop_rx, &mut on).await {
+                    match session(backend, manual, endpoint, opening, &mut out_rx, &mut stop_rx, &mut on).await {
                         Outcome::Stopped => break,
                         Outcome::Reconnect if reconnects < 20 => {
                             reconnects += 1;
@@ -712,17 +802,31 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         }
                         // Native-audio models only speak: ask for audio and read its transcription.
                         // They may refuse before setup completes or only once input arrives.
+                        Outcome::Refused(r) | Outcome::Failed(r) if manual && live::rejects_manual_activity(&r) => {
+                            manual = false;
+                            resume = None;
+                            status(&app, "reconnecting", None);
+                        }
+                        // A handle from a session set up differently (or too old) is refused; start afresh once.
+                        Outcome::Refused(r) | Outcome::Failed(r) if resume.is_some() && !fresh_retry && live::is_stale_session(&r) => {
+                            fresh_retry = true;
+                            resume = None;
+                            status(&app, "reconnecting", None);
+                        }
+                        // The handle belongs to the text session, so the audio one starts without it.
                         Outcome::Refused(r)
                             if backend == Backend::GeminiLive && text_output && live::should_retry_with_audio(&r) =>
                         {
                             text_output = false;
-                            mark_audio_only(model);
+                            resume = None;
+                            mark_audio_only(&app, model);
                         }
                         Outcome::Failed(r)
                             if backend == Backend::GeminiLive && text_output && live::mentions_modality(&r) =>
                         {
                             text_output = false;
-                            mark_audio_only(model);
+                            resume = None;
+                            mark_audio_only(&app, model);
                             status(&app, "reconnecting", None);
                         }
                         Outcome::Refused(r) | Outcome::Failed(r) => {
@@ -769,6 +873,9 @@ mod tests {
             assert!(setup.contains("\"setup\""));
             ws.send(Message::binary(first_reply.as_bytes().to_vec())).await.unwrap();
             if first_reply.contains("setupComplete") {
+                // The app marks where speech starts, then streams it.
+                let start = ws.next().await.unwrap().unwrap().into_text().unwrap();
+                assert!(start.contains("activityStart"), "{start}");
                 let audio = ws.next().await.unwrap().unwrap().into_text().unwrap();
                 assert!(audio.contains("audio/pcm;rate=16000"));
                 let reply = r#"{"serverContent":{"inputTranscription":{"text":"hello"},"modelTurn":{"parts":[{"text":"你好"}]},"turnComplete":true}}"#;
@@ -779,10 +886,15 @@ mod tests {
         format!("ws://{addr}/")
     }
 
+    /// `n` samples loud enough to count as speech.
+    fn speech(n: usize) -> Vec<u8> {
+        live::to_pcm16le(&(0..n).map(|i| 0.3 * (i as f32 * 0.3).sin()).collect::<Vec<_>>())
+    }
+
     fn setup() -> serde_json::Value {
         live::setup_message(&LiveConfig {
             model: "m", target_language: "繁體中文", tutor: false, text_output: true, resume_handle: None,
-            screen: ScreenMode::None,
+            screen: ScreenMode::None, manual_activity: true,
         })
     }
 
@@ -791,7 +903,7 @@ mod tests {
         let url = fake_server(r#"{"setupComplete":{}}"#).await;
         let (tx, mut rx) = mpsc::channel(4);
         let (stop_tx, mut stop) = watch::channel(false);
-        tx.send(Outgoing::Audio(vec![0u8; 3200])).await.unwrap();
+        tx.send(Outgoing::Audio(speech(1600))).await.unwrap();
         let mut events = Vec::new();
         let mut on = |e: ServerEvent| {
             if e == ServerEvent::TurnComplete {
@@ -799,7 +911,7 @@ mod tests {
             }
             events.push(e);
         };
-        let run = session(Backend::GeminiLive, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
+        let run = session(Backend::GeminiLive, true, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
         assert!(matches!(tokio::time::timeout(Duration::from_secs(5), run).await.unwrap(), Outcome::Stopped));
         drop(on);
         assert!(events.contains(&ServerEvent::Input("hello".into())));
@@ -812,7 +924,7 @@ mod tests {
         let (_tx, mut rx) = mpsc::channel::<Outgoing>(1);
         let (_stop_tx, mut stop) = watch::channel(false);
         let mut on = |_: ServerEvent| {};
-        let run = session(Backend::GeminiLive, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
+        let run = session(Backend::GeminiLive, true, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
         match tokio::time::timeout(Duration::from_secs(5), run).await.unwrap() {
             Outcome::Refused(r) => assert!(r.contains("API key")),
             _ => panic!("expected a refusal"),
@@ -836,22 +948,13 @@ mod tests {
         });
         let (tx, mut rx) = mpsc::channel(4);
         let (_stop_tx, mut stop) = watch::channel(false);
-        tx.send(Outgoing::Audio(vec![0u8; 320])).await.unwrap();
+        tx.send(Outgoing::Audio(speech(160))).await.unwrap();
         let mut on = |_: ServerEvent| {};
-        let run = session(Backend::GeminiLive, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
+        let run = session(Backend::GeminiLive, true, (url, vec![]), vec![setup()], &mut rx, &mut stop, &mut on);
         match tokio::time::timeout(Duration::from_secs(5), run).await.unwrap() {
             Outcome::Failed(r) => assert!(live::mentions_modality(&r), "{r}"),
             _ => panic!("expected a failure after setup"),
         }
-    }
-
-    #[test]
-    fn audio_only_models_are_remembered() {
-        assert!(!audio_only("gemini-test-live"));
-        mark_audio_only("gemini-test-live");
-        mark_audio_only("gemini-test-live");
-        assert!(audio_only("gemini-test-live"));
-        assert_eq!(AUDIO_ONLY.lock().unwrap().iter().filter(|m| *m == "gemini-test-live").count(), 1);
     }
 
     #[test]

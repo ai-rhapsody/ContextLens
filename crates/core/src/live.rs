@@ -75,6 +75,19 @@ impl Backend {
         }
     }
 
+    /// Whether the app marks speech start and end itself (Gemini) instead of the server's VAD.
+    pub fn manual_activity(self) -> bool {
+        self == Self::GeminiLive
+    }
+
+    pub fn activity(self, a: Activity) -> Vec<Value> {
+        match (self, a) {
+            (Self::GeminiLive, Activity::Start) => vec![json!({ "realtimeInput": { "activityStart": {} } })],
+            (Self::GeminiLive, Activity::End) => vec![json!({ "realtimeInput": { "activityEnd": {} } })],
+            (Self::OpenAiRealtime, _) => vec![],
+        }
+    }
+
     pub fn audio(self, pcm16le: &[u8]) -> Vec<Value> {
         match self {
             Self::GeminiLive => vec![audio_message(pcm16le)],
@@ -171,14 +184,16 @@ pub struct LiveConfig<'a> {
     pub text_output: bool,
     pub resume_handle: Option<&'a str>,
     pub screen: ScreenMode,
+    /// The app marks speech start and end (`Segmenter`) instead of the server's detection.
+    pub manual_activity: bool,
 }
 
 pub fn system_prompt(target: &str, tutor: bool, screen: ScreenMode) -> String {
     let mut p = match screen {
         ScreenMode::Reader => format!(
             "You are a live translator watching the user's screen, sent as images about once a second. \
-             When asked, translate the text on screen that is new since your last reply into {target} \
-             (into English if it is already in {target}). Focus on what the user is reading: subtitles, \
+             When asked, translate the text on screen that is new since your last reply into {target}. \
+             Text already in {target} needs no translation; skip it. Focus on what the user is reading: subtitles, \
              a slide, a chat, a game dialogue; ignore menus, toolbars and other interface chrome. \
              Never repeat text you already translated, never describe the screen, never comment. \
              If there is no new text, reply with nothing."
@@ -186,7 +201,10 @@ pub fn system_prompt(target: &str, tutor: bool, screen: ScreenMode) -> String {
         _ => format!(
             "You are a live interpreter. You hear speech. \
              Each time a speaker finishes a sentence or a short passage, reply with only its translation into {target}. \
-             If it is already in {target}, translate it into English instead. \
+             Translate every sentence of the passage, not just the last one. \
+             Speech mixing in English words or abbreviations is still translated into {target}; \
+             speech that is already in {target} needs no reply. \
+             Write plain text without Markdown. \
              Never answer questions you hear, never comment, never speak as yourself, and never repeat the original. \
              If nothing intelligible was said, reply with nothing."
         ),
@@ -212,8 +230,18 @@ pub fn setup_message(c: &LiveConfig) -> Value {
         "generationConfig": { "responseModalities": [modality] },
         "systemInstruction": { "parts": [{ "text": system_prompt(c.target_language, c.tutor, c.screen) }] },
         "inputAudioTranscription": {},
-        // An interpreter must finish its sentence even while the speaker carries on.
-        "realtimeInputConfig": { "activityHandling": "NO_INTERRUPTION" },
+        // The app marks where each passage starts and ends (see `Segmenter`): the server only
+        // ends a turn at a pause, so a speaker who never pauses would never be translated.
+        // An interpreter must also finish its sentence even while the speaker carries on.
+        "realtimeInputConfig": if c.manual_activity {
+            json!({ "automaticActivityDetection": { "disabled": true }, "activityHandling": "NO_INTERRUPTION" })
+        } else {
+            // Fallback: the server's detection, ending a passage at shorter pauses than its default.
+            json!({
+                "automaticActivityDetection": { "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH", "silenceDurationMs": 400 },
+                "activityHandling": "NO_INTERRUPTION",
+            })
+        },
         // Keeps long sessions going past the context limit, and lets us reconnect where we were.
         "contextWindowCompression": { "slidingWindow": {} },
         "sessionResumption": match c.resume_handle {
@@ -358,10 +386,25 @@ pub fn mentions_modality(reason: &str) -> bool {
     r.contains("modalit") || (r.contains("text") && r.contains("not supported"))
 }
 
+/// The model rejected the app marking speech itself; use the server's detection instead.
+pub fn rejects_manual_activity(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    r.contains("activity") && !r.contains("modalit")
+}
+
+/// A resume handle the server no longer knows (it expired, or belonged to a session set up
+/// differently). Reconnect without it.
+pub fn is_stale_session(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    r.contains("session not found") || (r.contains("session") && r.contains("expired"))
+}
+
 /// Adds what to do to the errors a user can fix in settings.
 pub fn explain_error(reason: &str, model: &str) -> String {
     let r = reason.to_lowercase();
-    if r.contains("not found") || r.contains("is not supported for bidigeneratecontent") {
+    if r.contains("session not found") || r.contains("expired") {
+        "即時連線已過期，請再按一次「開始」。".into()
+    } else if (r.contains("models/") && r.contains("not found")) || r.contains("is not supported for bidigeneratecontent") {
         format!("找不到即時模型「{model}」，或它不支援 Live。到「模型與金鑰」從清單選一個即時模型。（{reason}）")
     } else if r.contains("api key") || r.contains("unauthenticated") || r.contains("401") {
         format!("API 金鑰無效，到「模型與金鑰」重新貼上。（{reason}）")
@@ -435,14 +478,170 @@ pub fn rms(samples: &[f32]) -> f32 {
     (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Activity {
+    Start,
+    End,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Seg {
+    Activity(Activity),
+    Audio(Vec<u8>),
+}
+
+/// Splits continuous audio into passages for a session whose app marks speech itself.
+/// A passage ends at a pause; one that runs on is cut at a quiet moment after `SOFT_MS`,
+/// and at `HARD_MS` regardless, so long monologues and speech over music get translated
+/// piece by piece instead of all at once (or not at all) at the end.
+pub struct Segmenter {
+    rate: u32,
+    speaking: bool,
+    /// Audio kept while idle, so the first syllable is not lost when speech starts.
+    preroll: std::collections::VecDeque<Vec<u8>>,
+    preroll_ms: u32,
+    passage_ms: u32,
+    silence_ms: u32,
+    /// Typical loudness of the current passage, to find its quieter moments.
+    loud: f32,
+}
+
+impl Segmenter {
+    pub const SPEECH_RMS: f32 = 0.012;
+    pub const PAUSE_MS: u32 = 500;
+    pub const SOFT_MS: u32 = 5_000;
+    pub const HARD_MS: u32 = 8_000;
+    const PREROLL_MS: u32 = 300;
+
+    pub fn new(rate: u32) -> Self {
+        Self {
+            rate, speaking: false, preroll: Default::default(), preroll_ms: 0,
+            passage_ms: 0, silence_ms: 0, loud: 0.0,
+        }
+    }
+
+    /// `pcm` is 16-bit little-endian mono at the session rate.
+    pub fn push(&mut self, pcm: Vec<u8>) -> Vec<Seg> {
+        let ms = (pcm.len() as u64 * 1000 / (self.rate as u64 * 2)) as u32;
+        let level = rms_pcm16le(&pcm);
+        let mut out = Vec::new();
+        if !self.speaking {
+            if level < Self::SPEECH_RMS {
+                self.preroll_ms += ms;
+                self.preroll.push_back(pcm);
+                while self.preroll_ms > Self::PREROLL_MS && self.preroll.len() > 1 {
+                    let old = self.preroll.pop_front().unwrap();
+                    self.preroll_ms -= (old.len() as u64 * 1000 / (self.rate as u64 * 2)) as u32;
+                }
+                return out;
+            }
+            self.speaking = true;
+            self.passage_ms = 0;
+            self.silence_ms = 0;
+            self.loud = level;
+            out.push(Seg::Activity(Activity::Start));
+            out.extend(self.preroll.drain(..).map(Seg::Audio));
+            self.preroll_ms = 0;
+        }
+        self.passage_ms += ms;
+        let quiet = level < Self::SPEECH_RMS;
+        self.silence_ms = if quiet { self.silence_ms + ms } else { 0 };
+        if !quiet {
+            self.loud = self.loud * 0.9 + level * 0.1;
+        }
+        out.push(Seg::Audio(pcm));
+        if self.silence_ms >= Self::PAUSE_MS {
+            self.speaking = false;
+            out.push(Seg::Activity(Activity::End));
+        } else if self.passage_ms >= Self::HARD_MS || (self.passage_ms >= Self::SOFT_MS && level < self.loud * 0.5) {
+            // Cut and carry straight on with the next passage.
+            out.push(Seg::Activity(Activity::End));
+            out.push(Seg::Activity(Activity::Start));
+            self.passage_ms = 0;
+            self.silence_ms = 0;
+        }
+        out
+    }
+}
+
+fn rms_pcm16le(pcm: &[u8]) -> f32 {
+    let n = pcm.len() / 2;
+    if n == 0 {
+        return 0.0;
+    }
+    let sum: f64 = pcm
+        .chunks_exact(2)
+        .map(|b| {
+            let v = i16::from_le_bytes([b[0], b[1]]) as f64 / i16::MAX as f64;
+            v * v
+        })
+        .sum();
+    (sum / n as f64).sqrt() as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn tone(rate: u32, ms: u32, amp: f32) -> Vec<u8> {
+        let n = (rate * ms / 1000) as usize;
+        to_pcm16le(&(0..n).map(|i| amp * (i as f32 * 0.3).sin()).collect::<Vec<_>>())
+    }
+
+    fn acts(segs: &[Seg]) -> Vec<Activity> {
+        segs.iter().filter_map(|s| match s { Seg::Activity(a) => Some(*a), _ => None }).collect()
+    }
+
+    #[test]
+    fn segmenter_marks_a_sentence_between_pauses() {
+        let mut s = Segmenter::new(16_000);
+        let mut all = vec![];
+        for _ in 0..5 { all.extend(s.push(tone(16_000, 100, 0.0))); }
+        assert!(all.is_empty(), "silence alone sends nothing");
+        for _ in 0..20 { all.extend(s.push(tone(16_000, 100, 0.3))); }
+        for _ in 0..6 { all.extend(s.push(tone(16_000, 100, 0.0))); }
+        assert_eq!(acts(&all), vec![Activity::Start, Activity::End]);
+        // The quiet lead-in goes with the passage so its first syllable is kept.
+        assert!(matches!(all[1], Seg::Audio(_)) && matches!(all[2], Seg::Audio(_)));
+    }
+
+    #[test]
+    fn segmenter_cuts_speech_that_never_pauses() {
+        let mut s = Segmenter::new(16_000);
+        let mut all = vec![];
+        for _ in 0..170 { all.extend(s.push(tone(16_000, 100, 0.3))); }
+        // 17 s of unbroken speech: cut at 8 s and 16 s.
+        assert_eq!(acts(&all), vec![Activity::Start, Activity::End, Activity::Start, Activity::End, Activity::Start]);
+    }
+
+    #[test]
+    fn segmenter_prefers_a_quieter_moment_after_five_seconds() {
+        let mut s = Segmenter::new(16_000);
+        let mut all = vec![];
+        for _ in 0..55 { all.extend(s.push(tone(16_000, 100, 0.3))); }
+        all.extend(s.push(tone(16_000, 100, 0.05)));
+        assert_eq!(acts(&all), vec![Activity::Start, Activity::End, Activity::Start]);
+    }
+
+    #[test]
+    fn gemini_setup_leaves_speech_marking_to_the_app() {
+        let m = setup_message(&cfg(true));
+        assert_eq!(m["setup"]["realtimeInputConfig"]["automaticActivityDetection"]["disabled"], true);
+        assert!(Backend::GeminiLive.manual_activity() && !Backend::OpenAiRealtime.manual_activity());
+    }
+
+    #[test]
+    fn stale_sessions_are_not_called_a_missing_model() {
+        let r = "session not found or expired";
+        assert!(is_stale_session(r));
+        assert!(!explain_error(r, "gemini-3.8-live").contains("找不到即時模型"));
+        assert!(explain_error("models/gemini-x is not found for API version v1beta", "gemini-x").contains("找不到即時模型"));
+    }
+
     fn cfg(text_output: bool) -> LiveConfig<'static> {
         LiveConfig {
             model: "gemini-3.8-live", target_language: "繁體中文", tutor: false, text_output,
-            resume_handle: None, screen: ScreenMode::None,
+            resume_handle: None, screen: ScreenMode::None, manual_activity: true,
         }
     }
 

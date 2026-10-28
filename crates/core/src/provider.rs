@@ -74,7 +74,7 @@ pub fn can_search(provider: Provider, model: &str) -> bool {
 pub enum ProviderError {
     #[error("{}", describe_network(.0))]
     Network(#[from] reqwest::Error),
-    #[error("{provider} 回應 {status}：{message}")]
+    #[error("{}", describe_api(provider, *status, message))]
     Api {
         provider: &'static str,
         status: u16,
@@ -84,6 +84,45 @@ pub enum ProviderError {
     Stream(String),
     #[error("{0}")]
     Unsupported(String),
+}
+
+impl ProviderError {
+    /// Too many requests, or a quota (often the free tier's) used up.
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, ProviderError::Api { status: 429, .. })
+    }
+}
+
+/// An API error in plain language with what to do, followed by the service's own words.
+pub fn describe_api(provider: &str, status: u16, message: &str) -> String {
+    let name = match provider {
+        "gemini" => "Gemini",
+        "openai" => "ChatGPT",
+        "anthropic" => "Claude",
+        other => other,
+    };
+    let m = message.to_lowercase();
+    let what = if m.contains("api key") && (m.contains("invalid") || m.contains("not valid") || m.contains("incorrect")) || status == 401 {
+        format!("{name} 的 API 金鑰無效。到「模型與金鑰」重新貼上，再按「測試」。")
+    } else if status == 429 {
+        format!(
+            "{name} 回報請求太頻繁或額度已用完。免費金鑰的額度很低，等一分鐘再試；\
+             常用的話，到 {name} 的後台確認額度和帳單，或在「模型與金鑰」改用其他服務。"
+        )
+    } else if status == 403 {
+        format!("這組 {name} 金鑰沒有權限使用這個模型或功能（有些功能需要付費方案）。到「模型與金鑰」換一個模型，或確認帳號的方案。")
+    } else if status == 404 || m.contains("not found") {
+        format!("{name} 找不到這個模型。到「模型與金鑰」從清單選一個模型。")
+    } else if status == 413 || m.contains("too large") || m.contains("too long") {
+        "內容太大，模型收不下。截小一點的範圍，或用比較短的檔案再試。".to_string()
+    } else if (500..600).contains(&status) || m.contains("overloaded") {
+        format!("{name} 的伺服器暫時忙碌或出錯，稍後再試，或在「模型與金鑰」暫時改用其他服務。")
+    } else if status == 400 {
+        format!("{name} 不接受這個請求，可能是模型名稱不對，或模型不支援這種內容。")
+    } else {
+        format!("{name} 回報錯誤。")
+    };
+    format!("{what}（{status}：{message}）")
 }
 
 /// The innermost cause of a connection failure, with a plain-language hint. reqwest's own
@@ -641,6 +680,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(got, "a");
+    }
+
+    #[test]
+    fn api_errors_say_what_to_do_in_chinese() {
+        let e = ProviderError::Api { provider: "gemini", status: 429, message: "Resource has been exhausted".into() };
+        assert!(e.is_rate_limited());
+        let m = e.to_string();
+        assert!(m.contains("額度") && m.contains("Resource has been exhausted"), "{m}");
+        assert!(describe_api("openai", 401, "Incorrect API key provided").contains("金鑰無效"));
+        assert!(describe_api("anthropic", 529, "Overloaded").contains("伺服器"));
     }
 
     #[tokio::test]

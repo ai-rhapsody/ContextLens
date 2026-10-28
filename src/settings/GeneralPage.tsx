@@ -43,6 +43,14 @@ export function GeneralPage({ settings, commit }: { settings: Settings; commit: 
         </div>
         <div className="row">
           <div className="grow">
+            <div className="label">已經是我的語言時翻成英文</div>
+            <div className="hint">關閉時，已經是「我的語言」的文字保持原樣不翻譯；夾雜英文縮寫的句子仍會翻成我的語言。</div>
+          </div>
+          <Toggle on={settings.own_language_to_english} label="已經是我的語言時翻成英文"
+            onClick={() => commit({ ...settings, own_language_to_english: !settings.own_language_to_english })} />
+        </div>
+        <div className="row">
+          <div className="grow">
             <div className="label">保存歷史紀錄</div>
             <div className="hint">翻譯完成後存在這台電腦上，可以在「歷史紀錄」搜尋。關閉後不再新增，舊紀錄保留。</div>
           </div>
