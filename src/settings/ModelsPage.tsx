@@ -3,7 +3,7 @@ import {
   deleteApiKey, liveSetProvider, testLive, providerInfo, PROVIDERS, setApiKey, testProvider, type Caps, type Provider,
   type ProviderInfo, type Settings,
 } from "../lib/api";
-import { LIVE_PRESETS, MODEL_PRESETS } from "../lib/models";
+import { LIVE_PRESETS, MODEL_PRESETS, TRANSLATE_PRESETS } from "../lib/models";
 import { CapsRow } from "./Caps";
 import { ModelPicker } from "./ModelPicker";
 
@@ -65,6 +65,16 @@ function ProviderRow(props: {
           />
         </div>
       )}
+      {id === "gemini" && (
+        <div className="provider-line">
+          <span className="muted" style={{ width: 40 }} title="Live 只聽聲音、沒開註解時使用的口譯模型">口譯</span>
+          <ModelPicker
+            value={settings.models.gemini_translate} presets={TRANSLATE_PRESETS} ariaLabel="Gemini 口譯模型"
+            placeholder="例如 gemini-3.5-live-translate-preview"
+            onCommit={(v) => props.commit({ ...settings, models: { ...settings.models, gemini_translate: v } })}
+          />
+        </div>
+      )}
       <div className="provider-line">
         <span className="muted" style={{ width: 40 }}>能力</span>
         <CapsRow caps={props.caps} />
@@ -123,8 +133,10 @@ function liveResolution(settings: Settings, rows: ProviderInfo[]) {
     : [settings.provider, ...PROVIDERS.map((p) => p.id).filter((p) => p !== settings.provider)];
   const audio = order.map(by).find((r) => r?.has_key && r.caps.live && r.live_model);
   const screen = order.map(by).find((r) => r?.has_key && r.caps.image);
+  const interpreter = audio?.provider === "gemini" ? (settings.models.gemini_translate ?? "").trim() : "";
   return {
     audio: audio ? `${nameOf(audio.provider)} · ${audio.live_model}` : null,
+    interpreter: interpreter ? `Gemini · ${interpreter}` : null,
     screen: screen ? `${nameOf(screen.provider)} · ${screen.model}` : null,
   };
 }
@@ -165,7 +177,9 @@ function LivePanel({ settings, rows }: { settings: Settings; rows: ProviderInfo[
           <div className="grow">
             <div className="label">目前會用</div>
             <div className="hint">
-              聽聲音：{r.audio ?? <span className="warn">沒有可用的即時模型（需要 Gemini 或 ChatGPT 的金鑰）</span>}
+              {r.interpreter && <>只聽聲音、沒開註解：{r.interpreter}（口譯模型，邊講邊翻）<br /></>}
+              {r.interpreter ? "開註解或同時看螢幕：" : "聽聲音："}
+              {r.audio ?? <span className="warn">沒有可用的即時模型（需要 Gemini 或 ChatGPT 的金鑰）</span>}
               <br />
               只看螢幕：{r.screen ?? <span className="warn">沒有能讀圖片且有金鑰的模型</span>}
             </div>

@@ -125,6 +125,9 @@ pub struct Models {
     pub gemini_live: String,
     /// OpenAI model for Live sessions (Realtime API).
     pub openai_realtime: String,
+    /// Gemini's dedicated interpreter model, used when Live only listens and adds no notes.
+    /// Empty: always use `gemini_live`.
+    pub gemini_translate: String,
 }
 
 impl Default for Models {
@@ -135,6 +138,7 @@ impl Default for Models {
             anthropic: "claude-opus-5-5".into(),
             gemini_live: "gemini-3.8-live".into(),
             openai_realtime: "gpt-realtime-2.1-mini".into(),
+            gemini_translate: "gemini-3.5-live-translate-preview".into(),
         }
     }
 }

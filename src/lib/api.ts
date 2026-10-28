@@ -24,7 +24,7 @@ export interface Hotkey {
 export interface Settings {
   target_language: string;
   provider: Provider;
-  models: Record<Provider, string> & { gemini_live: string; openai_realtime: string };
+  models: Record<Provider, string> & { gemini_live: string; openai_realtime: string; gemini_translate: string };
   live_idle_minutes: number;
   live_provider: Provider | null;
   hotkeys: Hotkey[];

@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
+pub use contextlens_core::live::language_code;
 pub use contextlens_core::LiveSource;
 
 /// The part of the screen a Live session watches, in physical pixels relative to its monitor.
@@ -98,8 +99,9 @@ impl LiveHandle {
 
 /// Where a session's content goes.
 pub enum Engine {
-    /// A real-time API, needed for audio.
-    Realtime { backend: Backend, model: String, api_key: String },
+    /// A real-time API, needed for audio. `fallback` is the regular Live model to switch to
+    /// if the interpreter model (`Backend::GeminiTranslate`) cannot be used.
+    Realtime { backend: Backend, model: String, api_key: String, fallback: Option<String> },
     /// Screen only: each settled screen goes to a regular vision model. Works with any provider
     /// whose model reads images, and costs only when the screen changes.
     Reader { provider: Provider, model: String, api_key: String },
@@ -108,7 +110,7 @@ pub enum Engine {
 impl Engine {
     fn provider(&self) -> Provider {
         match self {
-            Engine::Realtime { backend: Backend::GeminiLive, .. } => Provider::Gemini,
+            Engine::Realtime { backend: Backend::GeminiLive | Backend::GeminiTranslate, .. } => Provider::Gemini,
             Engine::Realtime { backend: Backend::OpenAiRealtime, .. } => Provider::OpenAi,
             Engine::Reader { provider, .. } => *provider,
         }
@@ -493,9 +495,18 @@ pub async fn probe(app: &AppHandle, backend: Backend, model: &str, api_key: &str
         let (r, d) = (ready.clone(), replied.clone());
         let feeder = tauri::async_runtime::spawn(async move {
             r.notified().await;
-            let _ = tx.send(Outgoing::Turn("Good morning, everyone.")).await;
-            // Enough for a reply, or for a model that refuses text to say so.
-            tokio::time::sleep(Duration::from_secs(8)).await;
+            if backend == Backend::GeminiTranslate {
+                // The interpreter takes audio only and says nothing to silence: a second of it,
+                // then a moment for a refusal to arrive.
+                for _ in 0..10 {
+                    let _ = tx.send(Outgoing::Audio(vec![0u8; 3200])).await;
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            } else {
+                let _ = tx.send(Outgoing::Turn("Good morning, everyone.")).await;
+                // Enough for a reply, or for a model that refuses text to say so.
+                tokio::time::sleep(Duration::from_secs(8)).await;
+            }
             let _ = stop_tx.send(true);
         });
         let stopper = stop_rx.clone();
@@ -742,16 +753,18 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                 reader(&app, *provider, model, api_key, &args.target_language, args.tutor,
                        &mut out_rx, &mut stop_rx, &mut transcript).await;
             }
-            Engine::Realtime { backend, model, api_key } => {
-                let backend = *backend;
+            Engine::Realtime { backend, model, api_key, fallback } => {
+                let mut backend = *backend;
+                let mut model: String = model.clone();
+                let mut fallback = fallback.clone();
                 let mut resume: Option<String> = None;
-                let mut text_output = !audio_only(&app, model);
+                let mut text_output = !audio_only(&app, &model);
                 let mut reconnects = 0u32;
                 let mut fresh_retry = false;
                 let mut manual = backend.manual_activity();
                 loop {
                     let opening = backend.opening(&LiveConfig {
-                        model,
+                        model: &model,
                         target_language: &args.target_language,
                         tutor: args.tutor,
                         text_output,
@@ -772,7 +785,14 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                             // Gemini transcribes the next speech as it comes, so new input after a
                             // finished reply starts a new turn. OpenAI sends each transcript whole,
                             // sometimes after the reply has begun, so it belongs to the current turn.
-                            if backend == Backend::GeminiLive && !transcript.output.is_empty() {
+                            // The interpreter translates while people keep talking, so its line
+                            // ends at a finished sentence instead.
+                            let new_line = match backend {
+                                Backend::GeminiLive => !transcript.output.is_empty(),
+                                Backend::GeminiTranslate => live::caption_break(&transcript.output),
+                                Backend::OpenAiRealtime => false,
+                            };
+                            if new_line {
                                 transcript.end_turn();
                                 emit(&ui, LiveUi::TurnComplete);
                             }
@@ -790,9 +810,25 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         ServerEvent::ResumeHandle(h) => resume = Some(h),
                         ServerEvent::GoAway | ServerEvent::Error(_) => {}
                     };
-                    let endpoint = backend.endpoint(api_key, model);
+                    let endpoint = backend.endpoint(api_key, &model);
                     match session(backend, manual, endpoint, opening, &mut out_rx, &mut stop_rx, &mut on).await {
                         Outcome::Stopped => break,
+                        // The interpreter model is in preview and narrower (one language code, no
+                        // instructions); if it will not take this session, carry on with the regular one.
+                        Outcome::Refused(r) | Outcome::Failed(r)
+                            if backend == Backend::GeminiTranslate && fallback.is_some() =>
+                        {
+                            let next = fallback.take().unwrap();
+                            status(&app, "reconnecting", Some(format!(
+                                "口譯模型 {model} 無法使用，改用 {next}。（{}）", live::explain_error(&r, &model)
+                            )));
+                            backend = Backend::GeminiLive;
+                            model = next;
+                            text_output = !audio_only(&app, &model);
+                            manual = backend.manual_activity();
+                            resume = None;
+                            continue;
+                        }
                         Outcome::Reconnect if reconnects < 20 => {
                             reconnects += 1;
                             if !backend.resumable() {
@@ -819,18 +855,18 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         {
                             text_output = false;
                             resume = None;
-                            mark_audio_only(&app, model);
+                            mark_audio_only(&app, &model);
                         }
                         Outcome::Failed(r)
                             if backend == Backend::GeminiLive && text_output && live::mentions_modality(&r) =>
                         {
                             text_output = false;
                             resume = None;
-                            mark_audio_only(&app, model);
+                            mark_audio_only(&app, &model);
                             status(&app, "reconnecting", None);
                         }
                         Outcome::Refused(r) | Outcome::Failed(r) => {
-                            status(&app, "error", Some(live::explain_error(&r, model)));
+                            status(&app, "error", Some(live::explain_error(&r, &model)));
                             break;
                         }
                         Outcome::Reconnect => {

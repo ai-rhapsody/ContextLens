@@ -13,6 +13,9 @@ pub const SAMPLE_RATE: u32 = 16_000;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Backend {
     GeminiLive,
+    /// Gemini's interpreter model: translates continuously as people speak, audio in only,
+    /// no instructions. Its replies are read from the transcription of its translated speech.
+    GeminiTranslate,
     OpenAiRealtime,
 }
 
@@ -31,7 +34,7 @@ impl Backend {
     /// Input PCM rate the API expects.
     pub fn sample_rate(self) -> u32 {
         match self {
-            Self::GeminiLive => 16_000,
+            Self::GeminiLive | Self::GeminiTranslate => 16_000,
             Self::OpenAiRealtime => 24_000,
         }
     }
@@ -44,7 +47,7 @@ impl Backend {
     /// WebSocket URL and headers.
     pub fn endpoint(self, api_key: &str, model: &str) -> (String, Vec<(&'static str, String)>) {
         match self {
-            Self::GeminiLive => (url(api_key), vec![]),
+            Self::GeminiLive | Self::GeminiTranslate => (url(api_key), vec![]),
             Self::OpenAiRealtime => (
                 format!("wss://api.openai.com/v1/realtime?model={}", model.trim()),
                 vec![("Authorization", format!("Bearer {api_key}"))],
@@ -56,6 +59,7 @@ impl Backend {
     pub fn opening(self, c: &LiveConfig) -> Vec<Value> {
         match self {
             Self::GeminiLive => vec![setup_message(c)],
+            Self::GeminiTranslate => vec![translate_setup_message(c)],
             Self::OpenAiRealtime => vec![json!({
                 "type": "session.update",
                 "session": {
@@ -84,13 +88,13 @@ impl Backend {
         match (self, a) {
             (Self::GeminiLive, Activity::Start) => vec![json!({ "realtimeInput": { "activityStart": {} } })],
             (Self::GeminiLive, Activity::End) => vec![json!({ "realtimeInput": { "activityEnd": {} } })],
-            (Self::OpenAiRealtime, _) => vec![],
+            (Self::GeminiTranslate | Self::OpenAiRealtime, _) => vec![],
         }
     }
 
     pub fn audio(self, pcm16le: &[u8]) -> Vec<Value> {
         match self {
-            Self::GeminiLive => vec![audio_message(pcm16le)],
+            Self::GeminiLive | Self::GeminiTranslate => vec![audio_message(pcm16le)],
             Self::OpenAiRealtime => vec![json!({ "type": "input_audio_buffer.append", "audio": B64.encode(pcm16le) })],
         }
     }
@@ -98,6 +102,7 @@ impl Backend {
     pub fn frame(self, jpeg_b64: &str) -> Vec<Value> {
         match self {
             Self::GeminiLive => vec![image_message(jpeg_b64)],
+            Self::GeminiTranslate => vec![],
             Self::OpenAiRealtime => vec![json!({
                 "type": "conversation.item.create",
                 "item": { "type": "message", "role": "user", "content": [
@@ -110,6 +115,7 @@ impl Backend {
     pub fn turn(self, text: &str) -> Vec<Value> {
         match self {
             Self::GeminiLive => vec![text_turn_message(text)],
+            Self::GeminiTranslate => vec![],
             Self::OpenAiRealtime => vec![
                 json!({ "type": "conversation.item.create", "item": { "type": "message", "role": "user",
                         "content": [{ "type": "input_text", "text": text }] } }),
@@ -120,7 +126,7 @@ impl Backend {
 
     pub fn parse(self, msg: &str) -> Vec<ServerEvent> {
         match self {
-            Self::GeminiLive => parse(msg),
+            Self::GeminiLive | Self::GeminiTranslate => parse(msg),
             Self::OpenAiRealtime => parse_openai(msg),
         }
     }
@@ -253,6 +259,59 @@ pub fn setup_message(c: &LiveConfig) -> Value {
         setup["outputAudioTranscription"] = json!({});
     }
     json!({ "setup": setup })
+}
+
+/// Setup for the interpreter model. It takes no system instruction: the target language and
+/// whether to repeat speech already in it are all it is told.
+pub fn translate_setup_message(c: &LiveConfig) -> Value {
+    json!({ "setup": {
+        "model": format!("models/{}", c.model.trim_start_matches("models/")),
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "inputAudioTranscription": {},
+            "outputAudioTranscription": {},
+            "translationConfig": {
+                "targetLanguageCode": language_code(c.target_language).unwrap_or("en"),
+                "echoTargetLanguage": false,
+            },
+        },
+    } })
+}
+
+/// Whether an interpreter caption line is done and the next speech starts a new one: it ends
+/// in a sentence end, or has grown long enough to read on its own.
+pub fn caption_break(output: &str) -> bool {
+    let t = output.trim_end();
+    t.ends_with(['。', '！', '？', '.', '!', '?', '…']) || t.chars().count() >= 60
+}
+
+/// The BCP-47 code for the user's language, as the interpreter model wants it. Names the
+/// settings page offers are mapped; a value that already looks like a code is used as is.
+pub fn language_code(target: &str) -> Option<&str> {
+    let t = target.trim();
+    let named = match t {
+        "繁體中文" | "正體中文" | "中文（繁體）" => "zh-TW",
+        "简体中文" | "簡體中文" | "中文（简体）" => "zh-CN",
+        "中文" => "zh",
+        "English" | "英文" | "英語" => "en",
+        "日本語" | "日文" => "ja",
+        "한국어" | "韓文" => "ko",
+        "Español" => "es",
+        "Français" => "fr",
+        "Deutsch" => "de",
+        "Italiano" => "it",
+        "Português" => "pt",
+        "Русский" => "ru",
+        "Tiếng Việt" => "vi",
+        "ภาษาไทย" => "th",
+        "Bahasa Indonesia" => "id",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return Some(named);
+    }
+    let looks_like_code = (2..=8).contains(&t.len()) && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    looks_like_code.then_some(t)
 }
 
 pub fn audio_message(pcm16le: &[u8]) -> Value {
@@ -621,6 +680,29 @@ mod tests {
         for _ in 0..55 { all.extend(s.push(tone(16_000, 100, 0.3))); }
         all.extend(s.push(tone(16_000, 100, 0.05)));
         assert_eq!(acts(&all), vec![Activity::Start, Activity::End, Activity::Start]);
+    }
+
+    #[test]
+    fn interpreter_captions_break_at_sentence_ends() {
+        assert!(!caption_break(""));
+        assert!(!caption_break("我們今天要"));
+        assert!(caption_break("我們今天要談定價。"));
+        assert!(caption_break(&"長".repeat(60)));
+    }
+
+    #[test]
+    fn interpreter_setup_names_the_target_language_and_nothing_else() {
+        let c = LiveConfig { model: "gemini-3.5-live-translate-preview", ..cfg(false) };
+        let m = &Backend::GeminiTranslate.opening(&c)[0]["setup"];
+        assert_eq!(m["model"], "models/gemini-3.5-live-translate-preview");
+        assert_eq!(m["generationConfig"]["translationConfig"]["targetLanguageCode"], "zh-TW");
+        assert_eq!(m["generationConfig"]["responseModalities"][0], "AUDIO");
+        assert!(m.get("systemInstruction").is_none());
+        assert!(Backend::GeminiTranslate.turn("x").is_empty() && Backend::GeminiTranslate.frame("x").is_empty());
+        assert!(!Backend::GeminiTranslate.manual_activity());
+        assert_eq!(language_code("简体中文"), Some("zh-CN"));
+        assert_eq!(language_code("pt-BR"), Some("pt-BR"));
+        assert_eq!(language_code("台語"), None);
     }
 
     #[test]

@@ -334,7 +334,9 @@ fn stop_live(app: &AppHandle) {
 /// Chooses where a Live session goes. Audio needs a real-time model (Gemini Live, OpenAI
 /// Realtime); the screen alone works with any model that reads images. The chosen provider
 /// comes first, then the default provider, then the others, keeping only those with a key.
-fn pick_engine(s: &Settings, audio: bool) -> Result<live::Engine, String> {
+/// `interpret`: the session only listens and adds no notes, so Gemini's interpreter model
+/// (which takes no instructions and no screen) can serve it.
+fn pick_engine(s: &Settings, audio: bool, interpret: bool) -> Result<live::Engine, String> {
     let order: Vec<Provider> = match s.live_provider {
         Some(p) => vec![p],
         None => std::iter::once(s.provider).chain(Provider::ALL.into_iter().filter(|p| *p != s.provider)).collect(),
@@ -343,8 +345,19 @@ fn pick_engine(s: &Settings, audio: bool) -> Result<live::Engine, String> {
         let Some(api_key) = secrets::get(p) else { continue };
         if audio {
             let (Some(backend), Some(model)) = (Backend::for_provider(p), s.live_model_for(p)) else { continue };
+            let interpreter = s.models.gemini_translate.trim();
+            let usable = live::language_code(&s.target_language).is_some();
+            if p == Provider::Gemini && interpret && usable && !interpreter.is_empty() {
+                let fallback = caps::is_live_model(p, model).then(|| model.to_string());
+                return Ok(live::Engine::Realtime {
+                    backend: Backend::GeminiTranslate,
+                    model: interpreter.into(),
+                    api_key,
+                    fallback,
+                });
+            }
             if caps::is_live_model(p, model) {
-                return Ok(live::Engine::Realtime { backend, model: model.into(), api_key });
+                return Ok(live::Engine::Realtime { backend, model: model.into(), api_key, fallback: None });
             }
         } else if caps::for_model(p, s.model_for(p)).image {
             return Ok(live::Engine::Reader { provider: p, model: s.model_for(p).into(), api_key });
@@ -381,12 +394,13 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
     };
     let mut sources = sources;
     let audio = sources.iter().any(|s| *s != live::LiveSource::Screen);
-    let engine = match pick_engine(&settings, audio) {
+    let interpret = audio && !tutor && !sources.contains(&live::LiveSource::Screen);
+    let engine = match pick_engine(&settings, audio, interpret) {
         Ok(e) => e,
         // Nothing can listen, but the screen can still be watched: do that, and say why.
         Err(why) if audio && sources.contains(&live::LiveSource::Screen) => {
             sources.retain(|s| *s == live::LiveSource::Screen);
-            let e = pick_engine(&settings, false)?;
+            let e = pick_engine(&settings, false, false)?;
             live_status(app, "connecting", Some(format!("{why} 這次先只看螢幕。")));
             e
         }
@@ -1063,7 +1077,17 @@ async fn test_live(app: AppHandle, state: State<'_, AppState>, args: KeyArgs) ->
     let model = model.filter(|m| !m.trim().is_empty()).ok_or("先選一個即時模型。")?;
     let key = secrets::get(args.provider).ok_or("先貼上並儲存 API 金鑰。")?;
     live::probe(&app, backend, &model, &key, &target).await?;
-    Ok(model)
+    let interpreter = state.settings.lock().unwrap().models.gemini_translate.trim().to_string();
+    if args.provider != Provider::Gemini || interpreter.is_empty() {
+        return Ok(model);
+    }
+    if live::language_code(&target).is_none() {
+        return Ok(format!("{model}；口譯模型不支援「{target}」，Live 會一律用 {model}"));
+    }
+    match live::probe(&app, contextlens_core::live::Backend::GeminiTranslate, &interpreter, &key, &target).await {
+        Ok(()) => Ok(format!("{model}，口譯 {interpreter}")),
+        Err(e) => Ok(format!("{model}；口譯模型 {interpreter} 無法使用，Live 會改用 {model}：{e}")),
+    }
 }
 
 /// Sends a tiny request with the stored key so the settings page can say "works" or why not.

@@ -43,3 +43,9 @@ export const LIVE_PRESETS: Partial<Record<Provider, ModelOption[]>> = {
     { id: "gpt-realtime-2.1", label: "GPT Realtime 2.1", note: "品質較好" },
   ],
 };
+
+/** Gemini's interpreter model, used when Live only listens and adds no notes. */
+export const TRANSLATE_PRESETS: ModelOption[] = [
+  { id: "gemini-3.5-live-translate-preview", label: "Gemini 3.5 Live Translate", note: "專門口譯、邊講邊翻" },
+  { id: "", label: "不使用", note: "一律用即時模型" },
+];
