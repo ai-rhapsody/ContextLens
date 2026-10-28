@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn a_multibyte_character_split_across_chunks_survives() {
         let bytes = "data: 你好\n".as_bytes();
-        let cut = 8; // inside the three bytes of 你
+        let cut = 8; // inside the three bytes of the character 你
         let mut d = SseDecoder::default();
         assert!(d.push(&bytes[..cut]).is_empty());
         assert_eq!(d.push(&bytes[cut..]), vec!["你好"]);

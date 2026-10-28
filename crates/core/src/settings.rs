@@ -128,7 +128,7 @@ pub struct Models {
     /// Gemini's dedicated interpreter model, used when Live only listens and adds no notes.
     /// Empty: always use `gemini_live`.
     pub gemini_translate: String,
-    /// Models for 解釋 and 搜尋, which need more knowledge than translating. Empty: the main model.
+    /// Models for Explain and Search, which need more knowledge than translating. Empty: the main model.
     pub gemini_explain: String,
     pub openai_explain: String,
     pub anthropic_explain: String,
@@ -289,7 +289,7 @@ impl Settings {
         }
     }
 
-    /// The model for a task: 解釋 and 搜尋 may use a stronger one than translating.
+    /// The model for a task: Explain and Search may use a stronger one than translating.
     pub fn model_for_task(&self, provider: Provider, task: Task) -> &str {
         let explain = match provider {
             Provider::Gemini => &self.models.gemini_explain,

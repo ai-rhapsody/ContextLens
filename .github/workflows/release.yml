@@ -120,7 +120,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "ContextLens v__VERSION__"
-          releaseBody: "下載：Windows 選 -setup.exe；Linux 選 .AppImage（可自動更新）、.deb 或 .rpm。已安裝的版本可以在 App 的「更新」頁直接更新。隱私政策與簽章政策：https://github.com/ai-rhapsody/ContextLens#隱私"
+          releaseBody: "下載：Windows 選 -setup.exe；Linux 選 .AppImage（可自動更新）、.deb 或 .rpm。已安裝的版本可以在 App 的「更新」頁直接更新。隱私政策與簽章政策：https://github.com/ai-rhapsody/ContextLens#privacy"
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

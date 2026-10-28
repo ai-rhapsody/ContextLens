@@ -409,7 +409,7 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
         }
         let _ = app.emit_to("live", "live-changed", ());
     }
-    // Remember the choice even if starting fails, so "開始" retries it once the problem is fixed.
+    // Remember the choice even if starting fails, so Start retries it once the problem is fixed.
     *state.live_sources.lock().unwrap() = sources.clone();
     // Remembered across restarts too, so a video-watching setup does not reopen with the mic.
     let settings = {

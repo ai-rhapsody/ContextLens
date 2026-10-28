@@ -4,14 +4,14 @@ import { TextField } from "./TextField";
 
 const CUSTOM = "__custom__";
 
-/** A preset list with "自訂…" at the end; a name not in the list shows as custom. */
+/** A preset list with "Custom…" at the end; a name not in the list shows as custom. */
 export function ModelPicker(props: {
   value: string;
   presets: ModelOption[];
   onCommit: (v: string) => void;
   ariaLabel: string;
   placeholder?: string;
-  /** The preset marked （預設）; the first one if not given. */
+  /** The preset marked "(default)"; the first one if not given. */
   defaultId?: string;
 }) {
   const known = props.presets.some((p) => p.id === props.value);
