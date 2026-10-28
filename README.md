@@ -2,7 +2,6 @@
 
 跨平台桌面應用（Tauri 2 + React）。反白文字、按熱鍵，在游標旁彈出視窗即時顯示翻譯；開啟教學模式還會說明句子結構、用法與延伸知識。用你自己的 Gemini、ChatGPT 或 Claude API 金鑰。
 
-[![GitHub Sponsors](https://img.shields.io/badge/GitHub_Sponsors-%E8%B4%8A%E5%8A%A9-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ai-rhapsody)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-%E8%AB%8B%E6%88%91%E5%96%9D%E6%9D%AF%E5%92%96%E5%95%A1-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/airhapsody)
 
 ## 下載
@@ -44,10 +43,7 @@
 
 ## 支持這個專案
 
-ContextLens 免費、開源，沒有廣告也不收集資料。如果它幫上你的忙，歡迎贊助開發：
-
-- [GitHub Sponsors](https://github.com/sponsors/ai-rhapsody)：可以每月定期贊助
-- [Ko-fi](https://ko-fi.com/airhapsody)：單次贊助，不用註冊帳號
+ContextLens 免費、開源，沒有廣告也不收集資料。如果它幫上你的忙，歡迎到 [Ko-fi](https://ko-fi.com/airhapsody) 贊助開發，不用註冊帳號。
 
 回報問題、提出建議也很有幫助，請到 [Issues](https://github.com/ai-rhapsody/ContextLens/issues)。
 
