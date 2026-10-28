@@ -363,3 +363,4 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .welcome-actions { display: flex; gap: 8px; flex: none; }
 .lv-divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; }
 .lv-divider::before, .lv-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.about { margin: 16px 0 0; font-size: 13px; color: var(--muted); }

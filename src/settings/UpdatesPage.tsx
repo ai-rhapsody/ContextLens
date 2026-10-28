@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
+import { openLink } from "../lib/api";
 import { checkForUpdate, currentVersion, installUpdate, restartApp, type UpdateState } from "../lib/updater";
+
+const REPO_URL = "https://github.com/dalof41014/ContextLens";
+const PRIVACY_URL = `${REPO_URL}/blob/main/PRIVACY.md`;
 
 export function UpdatesPage({ state, setState }: { state: UpdateState; setState: (s: UpdateState) => void }) {
   const [version, setVersion] = useState("");
@@ -54,6 +58,12 @@ export function UpdatesPage({ state, setState }: { state: UpdateState; setState:
 
         {state.phase === "error" && <div className="row"><span className="status-line err" style={{ margin: 0 }}>無法更新：{state.message}</span></div>}
       </div>
+      <p className="hint about">
+        檢查更新會連到 GitHub。ContextLens 不收集使用統計，你的內容只送到你設定的 AI 服務。{" "}
+        <button className="link" onClick={() => openLink(PRIVACY_URL)}>隱私政策</button>
+        {" · "}
+        <button className="link" onClick={() => openLink(REPO_URL)}>原始碼</button>
+      </p>
     </>
   );
 }

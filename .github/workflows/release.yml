@@ -86,7 +86,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "ContextLens v__VERSION__"
-          releaseBody: "Windows: the -setup.exe. macOS: the .dmg (aarch64 = Apple Silicon, x64 = Intel). Linux: the .AppImage (auto-updates), .deb or .rpm."
+          releaseBody: "Windows: the -setup.exe. macOS: the .dmg (aarch64 = Apple Silicon, x64 = Intel). Linux: the .AppImage (auto-updates), .deb or .rpm. Privacy policy and code signing policy: https://github.com/dalof41014/ContextLens#code-signing-policy"
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

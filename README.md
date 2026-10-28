@@ -2,6 +2,16 @@
 
 跨平台桌面應用（Tauri 2 + React）。反白文字、按熱鍵，在游標旁彈出視窗即時顯示翻譯；開啟教學模式還會說明句子結構、用法與延伸知識。用你自己的 Gemini、ChatGPT 或 Claude API 金鑰。
 
+## 下載
+
+到 [Releases](https://github.com/dalof41014/ContextLens/releases/latest) 下載：
+
+- **Windows**：`ContextLens_<版本>_x64-setup.exe`
+- **macOS**：`.dmg`（`aarch64` 是 Apple Silicon，`x64` 是 Intel）。第一次打開若顯示「已損毀」，在終端機執行 `xattr -cr /Applications/ContextLens.app`
+- **Linux**：`.AppImage`（可自動更新）、`.deb` 或 `.rpm`
+
+安裝後在「更新」頁可以線上更新。資料怎麼處理，請看[隱私政策](PRIVACY.md)。
+
 ## 功能
 
 - **熱鍵**：可新增多組，每組選「來源」和「動作」
@@ -47,7 +57,7 @@ Linux 另需 `libxdo-dev`（模擬複製按鍵）、`libpipewire-0.3-dev`、`lib
 | `src/popup` | 翻譯彈出視窗 |
 | `src/settings` | 設定視窗（一般、模型與金鑰、熱鍵、更新） |
 
-擷取選取文字的方式：記住剪貼簿 → 模擬複製 → 讀取 → 還原剪貼簿。macOS 第一次使用需要在「系統設定 → 隱私權與安全性 → 輔助使用」允許 ContextLens。Wayland 目前不支援全域熱鍵與按鍵模擬。
+擷取選取文字的方式：記住剪貼簿 → 模擬複製 → 讀取 → 還原剪貼簿（Linux 先讀 PRIMARY 選取）。macOS 第一次使用需要在「系統設定 → 隱私權與安全性」允許 ContextLens 的「輔助使用」與「螢幕錄製」。Wayland 不允許程式註冊全域熱鍵，「熱鍵」頁會列出 `--hotkey N` 指令，綁到桌面的自訂快捷鍵即可。
 
 ## 線上更新
 
@@ -60,6 +70,28 @@ Linux 另需 `libxdo-dev`（模擬複製按鍵）、`libpipewire-0.3-dev`、`lib
 3. **另外備份一份私鑰**：Secret 存進去之後無法再讀回來。遺失私鑰，就無法再發佈能被舊版接受的更新，使用者得重新安裝。
 4. 想換成自己的金鑰：`npx tauri signer generate -w ~/.tauri/contextlens.key`，把新公鑰貼到 `plugins.updater.pubkey`，再更新 Secret。換金鑰後，舊版無法自動更新。
 
-發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，到 Actions → `release` → Run workflow（預設只建 Windows，選 `all` 建全部平台）。tag `v<版本>` 會自動建立。推 tag 也會觸發，並建置全部平台。只想先試用、不發佈時，執行 `build`，不需要任何 Secret。
+發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，到 Actions → `release` → Run workflow（預設建全部平台，選 `windows` 只建 Windows）。tag `v<版本>` 會自動建立。推 tag 也會觸發，並建置全部平台。只想先試用、不發佈時，執行 `build`，不需要任何 Secret。
 
 更新端點是 `https://github.com/dalof41014/contextlens/releases/latest/download/latest.json`，**repo 必須是公開的**，否則已安裝的 app 無法匿名下載。若要保持私有，把 `latest.json` 與安裝檔放在別處（例如 S3、Cloudflare R2）並改 `endpoints`。
+
+## 隱私
+
+ContextLens 沒有自己的伺服器，也不收集使用統計。你選取的文字、截圖、檔案和 Live 的聲音與畫面，只在你操作時直接送到你自己設定的 AI 服務。詳見[隱私政策](PRIVACY.md)。
+
+## Code signing policy
+
+Windows 安裝檔的簽章計畫由 [SignPath.io](https://about.signpath.io/) 免費提供，憑證由 [SignPath Foundation](https://signpath.org/) 核發（申請通過後生效）。
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- **Committers and reviewers:** [dalof41014](https://github.com/dalof41014)
+- **Approvers:** [dalof41014](https://github.com/dalof41014)
+
+只有從本 repo 原始碼、經 GitHub Actions 的 `release` 工作流程建置出來的檔案才會簽章；每次發版都由 Approver 手動核准。
+
+Privacy: this program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. See the [privacy policy](PRIVACY.md).
+
+## 授權
+
+（待定）
+
