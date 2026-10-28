@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { openLink } from "../lib/api";
 import { checkForUpdate, currentVersion, installUpdate, restartApp, type UpdateState } from "../lib/updater";
 
-const REPO_URL = "https://github.com/dalof41014/ContextLens";
+const REPO_URL = "https://github.com/ai-rhapsody/ContextLens";
 const PRIVACY_URL = `${REPO_URL}/blob/main/PRIVACY.md`;
 
 export function UpdatesPage({ state, setState }: { state: UpdateState; setState: (s: UpdateState) => void }) {

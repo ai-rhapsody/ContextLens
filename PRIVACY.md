@@ -35,14 +35,14 @@ ContextLens 是在你電腦上執行的桌面程式。它沒有自己的伺服�
 
 ## 其他連線
 
-- **檢查更新**：每次啟動時，向 GitHub 下載 `https://github.com/dalof41014/contextlens/releases/latest/download/latest.json`。你按下更新時，也從 GitHub 下載安裝檔。GitHub 會看到你的 IP 位址和程式版本，依 [GitHub 隱私聲明](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)處理。
+- **檢查更新**：每次啟動時，向 GitHub 下載 `https://github.com/ai-rhapsody/ContextLens/releases/latest/download/latest.json`。你按下更新時，也從 GitHub 下載安裝檔。GitHub 會看到你的 IP 位址和程式版本，依 [GitHub 隱私聲明](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)處理。
 - **開啟連結**：點來源連結或搜尋關鍵字時，會用你的預設瀏覽器開啟該網頁（搜尋關鍵字會開 Google 搜尋）。
 
 除此之外，ContextLens 不會連到其他地方。
 
 ## 聯絡
 
-有問題請到 <https://github.com/dalof41014/ContextLens/issues> 提出。
+有問題請到 <https://github.com/ai-rhapsody/ContextLens/issues> 提出。
 
 ---
 

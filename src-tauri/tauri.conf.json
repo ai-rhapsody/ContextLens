@@ -101,13 +101,13 @@
       }
     },
     "license": "GPL-3.0-or-later",
-    "copyright": "Copyright © 2026 dalof41014. Licensed under GPL-3.0-or-later."
+    "copyright": "Copyright © 2026 ai-rhapsody. Licensed under GPL-3.0-or-later."
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcxQjQyNjJDMEU1OUEzMTIKUldRU28xa09MQ2EwY1FVdDE3c0paSjZpK0hyRnQ5VUx6cHhHMHozWmFVV0dKTkp1TkVjaTBQdjgK",
       "endpoints": [
-        "https://github.com/dalof41014/contextlens/releases/latest/download/latest.json"
+        "https://github.com/ai-rhapsody/ContextLens/releases/latest/download/latest.json"
       ]
     }
   }
