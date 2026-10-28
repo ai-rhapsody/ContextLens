@@ -187,6 +187,9 @@ pub struct Settings {
     pub welcome_seen: bool,
     /// The default Live hotkey was added once; removing it later keeps it removed.
     pub live_hotkey_added: bool,
+    /// `own_language_to_english` was moved to its new default once. Versions before 0.1.11
+    /// saved the old default (off) without the user choosing it.
+    pub own_language_upgraded: bool,
 }
 
 impl Default for Settings {
@@ -223,6 +226,7 @@ impl Default for Settings {
             own_language_to_english: true,
             welcome_seen: false,
             live_hotkey_added: false,
+            own_language_upgraded: false,
         }
     }
 }
@@ -257,6 +261,10 @@ impl Settings {
                     live_sources: vec![],
                 });
             }
+        }
+        if !self.own_language_upgraded {
+            self.own_language_upgraded = true;
+            self.own_language_to_english = true;
         }
         let new = Models::default();
         let m = &mut self.models;
@@ -353,6 +361,16 @@ mod tests {
         s.upgrade_defaults();
         assert!(!s.hotkeys.iter().any(|h| h.source == Source::Live), "a removed Live hotkey stays removed");
         assert_eq!(Settings::default().hotkeys.iter().filter(|h| h.source == Source::Live).count(), 1);
+    }
+
+    #[test]
+    fn the_old_own_language_default_moves_to_on_once() {
+        let mut s: Settings = serde_json::from_str(r#"{"own_language_to_english":false}"#).unwrap();
+        s.upgrade_defaults();
+        assert!(s.own_language_to_english);
+        s.own_language_to_english = false;
+        s.upgrade_defaults();
+        assert!(!s.own_language_to_english, "turning it off afterwards sticks");
     }
 
     #[test]

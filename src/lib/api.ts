@@ -41,6 +41,7 @@ export interface Settings {
   own_language_to_english: boolean;
   welcome_seen: boolean;
   live_hotkey_added: boolean;
+  own_language_upgraded: boolean;
 }
 
 export interface Media {
