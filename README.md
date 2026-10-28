@@ -7,7 +7,7 @@
 到 [Releases](https://github.com/dalof41014/ContextLens/releases/latest) 下載：
 
 - **Windows**：`ContextLens_<版本>_x64-setup.exe`
-- **macOS**：`.dmg`（`aarch64` 是 Apple Silicon，`x64` 是 Intel）。第一次打開若顯示「已損毀」，在終端機執行 `xattr -cr /Applications/ContextLens.app`
+- **macOS**：`.dmg`（`aarch64` 是 Apple Silicon，`x64` 是 Intel），以 Apple Developer ID 簽章並經 Apple 公證。Actions 的測試版沒有簽章，第一次打開若顯示「已損毀」，在終端機執行 `xattr -cr /Applications/ContextLens.app`
 - **Linux**：`.AppImage`（可自動更新）、`.deb` 或 `.rpm`
 
 安裝後在「更新」頁可以線上更新。資料怎麼處理，請看[隱私政策](PRIVACY.md)。
@@ -72,6 +72,8 @@ Linux 另需 `libxdo-dev`（模擬複製按鍵）、`libpipewire-0.3-dev`、`lib
 
 發佈：改好 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本號，到 Actions → `release` → Run workflow（預設建全部平台，選 `windows` 只建 Windows）。tag `v<版本>` 會自動建立。推 tag 也會觸發，並建置全部平台。只想先試用、不發佈時，執行 `build`，不需要任何 Secret。
 
+**macOS 簽章與公證**（選用）：在 repo 的 Actions Secrets 加上 `APPLE_CERTIFICATE`（Developer ID Application 憑證匯出的 .p12，轉成 base64）、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`（例如 `Developer ID Application: 名字 (TEAMID)`）、`APPLE_ID`、`APPLE_PASSWORD`（App 專用密碼）、`APPLE_TEAM_ID`。沒有設定時，`release` 會改用 ad-hoc 簽章並在 log 提醒。
+
 更新端點是 `https://github.com/dalof41014/contextlens/releases/latest/download/latest.json`，**repo 必須是公開的**，否則已安裝的 app 無法匿名下載。若要保持私有，把 `latest.json` 與安裝檔放在別處（例如 S3、Cloudflare R2）並改 `endpoints`。
 
 ## 隱私
@@ -87,7 +89,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 - **Committers and reviewers:** [dalof41014](https://github.com/dalof41014)
 - **Approvers:** [dalof41014](https://github.com/dalof41014)
 
-只有從本 repo 原始碼、經 GitHub Actions 的 `release` 工作流程建置出來的檔案才會簽章；每次發版都由 Approver 手動核准。
+只有從本 repo 原始碼、經 GitHub Actions 的 `release` 工作流程建置出來的檔案才會簽章；每次發版都由 Approver 手動核准。macOS 版由開發者自己的 Apple Developer ID 憑證簽章，並經 Apple 公證（notarization）。
 
 Privacy: this program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. See the [privacy policy](PRIVACY.md).
 

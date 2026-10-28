@@ -78,11 +78,33 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev \
             libpipewire-0.3-dev libclang-dev clang libxcb1-dev libxrandr-dev libgbm-dev libegl-dev libasound2-dev
       - run: npm ci
+      # macOS: with the Apple secrets set, the app is signed with the Developer ID certificate
+      # and notarized by Apple; without them it is ad-hoc signed (users must clear quarantine).
+      - name: macOS signing
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          HAS_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          HAS_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+        run: |
+          if [ "$HAS_CERT" != "true" ]; then
+            echo "::warning::APPLE_CERTIFICATE is not set: the macOS app is ad-hoc signed and not notarized."
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          elif [ "$HAS_NOTARY" != "true" ]; then
+            echo "::warning::APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID are not all set: signed but not notarized."
+          fi
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Read only on macOS. APPLE_SIGNING_IDENTITY may also come from the step above ("-").
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
           releaseName: "ContextLens v__VERSION__"

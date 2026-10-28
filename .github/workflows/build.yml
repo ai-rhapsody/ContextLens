@@ -57,6 +57,9 @@ jobs:
       - run: npm ci
       - name: Build the installer
         shell: bash
+        env:
+          # Test builds use no secrets: macOS is ad-hoc signed (signed releases come from release.yml).
+          APPLE_SIGNING_IDENTITY: ${{ matrix.name == 'macos' && '-' || '' }}
         # Updater artifacts need the signing key; test builds skip them.
         run: npm run tauri build -- ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - uses: actions/upload-artifact@v4
