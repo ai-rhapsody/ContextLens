@@ -829,20 +829,33 @@ async fn run_translation(
 
     let mut full = String::new();
     let mut sources: Vec<(String, String)> = Vec::new();
-    let mut result = stream_raw(&state, provider, &model, &req, Some(gen), |d| match d {
-        Delta::Text(t) => {
-            full.push_str(&t);
-            on_event.send(StreamEvent::Delta { text: t }).is_ok()
-        }
-        Delta::Source { title, url } => {
-            if sources.iter().any(|(_, u)| *u == url) {
-                return true;
+    // A busy server (503, often on free keys) usually answers a moment later: try once more,
+    // unless part of the answer is already showing.
+    let mut retried = false;
+    let mut result = loop {
+        let r = stream_raw(&state, provider, &model, &req, Some(gen), |d| match d {
+            Delta::Text(t) => {
+                full.push_str(&t);
+                on_event.send(StreamEvent::Delta { text: t }).is_ok()
             }
-            sources.push((title.clone(), url.clone()));
-            on_event.send(StreamEvent::Source { title, url }).is_ok()
+            Delta::Source { title, url } => {
+                if sources.iter().any(|(_, u)| *u == url) {
+                    return true;
+                }
+                sources.push((title.clone(), url.clone()));
+                on_event.send(StreamEvent::Source { title, url }).is_ok()
+            }
+        })
+        .await;
+        if retried || !full.is_empty() || !r.as_ref().is_err_and(|e| e.is_transient()) {
+            break r;
         }
-    })
-    .await;
+        retried = true;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        if state.generation.load(Ordering::SeqCst) != gen {
+            break r;
+        }
+    };
     // Web search (Gemini's Google grounding) is often unavailable on free keys and answers
     // 429. Answer from the model's own knowledge instead, and say so.
     if req.web_search && full.is_empty() && result.as_ref().is_err_and(|e| e.is_rate_limited()) {

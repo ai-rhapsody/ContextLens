@@ -217,6 +217,8 @@ export function Popup() {
   const skeletonGroups = task !== "translate" ? 3 : tutor ? 3 : media ? 2 : 1;
   const active = infoRef.current.find((p) => p.provider === activeId);
   const offline = task === "search" && active && !active.web;
+  // Gemini sometimes searches without returning the pages it used.
+  const noSources = task === "search" && status === "done" && !!active?.web && !fallback && !sources.length;
 
   return (
     <div
@@ -301,8 +303,13 @@ export function Popup() {
         {status === "error" && error && (
           <div className="notice" role="alert">
             {error}
-            {needsKey && (
-              <div><button className="btn" onClick={() => { showSettings(); hidePopup(); }}>開啟設定</button></div>
+            {(needsKey || input) && (
+              <div className="alts">
+                {input && !needsKey && (
+                  <button className="btn" onClick={() => start(input, task, tutor, override)}>重試</button>
+                )}
+                {needsKey && <button className="btn" onClick={() => { showSettings(); hidePopup(); }}>開啟設定</button>}
+              </div>
             )}
           </div>
         )}
@@ -328,6 +335,9 @@ export function Popup() {
         {status !== "error" && hasHeadings && <Answer text={result} task={task} streaming={streaming} />}
 
         <Sources list={sources} />
+        {noSources && (
+          <p className="offline faint">服務這次沒有回傳網頁來源，內容請用上面的搜尋關鍵字自行查證。</p>
+        )}
 
         {status === "done" && convo !== null && (
           <>
