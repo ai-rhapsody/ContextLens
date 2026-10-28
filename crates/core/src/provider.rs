@@ -91,6 +91,32 @@ impl ProviderError {
     pub fn is_rate_limited(&self) -> bool {
         matches!(self, ProviderError::Api { status: 429, .. })
     }
+
+    /// The service was busy or failed on its side (503 "overloaded" is common on free keys):
+    /// the same request may well work a moment later.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, ProviderError::Api { status, .. } if (500..600).contains(status))
+    }
+}
+
+/// An error sent inside the stream, as an API error when it says which kind (so it reads
+/// like one, in Chinese with what to do), else as the service's own words.
+fn stream_error(provider: Provider, error: &Value) -> ProviderError {
+    let message = error.get("message").and_then(Value::as_str).unwrap_or_default().to_string();
+    // Gemini and OpenAI put the HTTP status in `code`; Anthropic names the kind in `type`.
+    let status = error.get("code").and_then(Value::as_u64).map(|c| c as u16).or_else(|| {
+        match error.get("type").and_then(Value::as_str)? {
+            "overloaded_error" => Some(529),
+            "api_error" | "server_error" => Some(500),
+            "rate_limit_error" => Some(429),
+            _ => None,
+        }
+    });
+    match status {
+        Some(status) if status >= 400 => ProviderError::Api { provider: provider.id(), status, message },
+        _ if message.is_empty() => ProviderError::Stream(format!("{} 串流錯誤", provider.display_name())),
+        _ => ProviderError::Stream(message),
+    }
 }
 
 /// An API error in plain language with what to do, followed by the service's own words.
@@ -287,8 +313,8 @@ pub fn extract_delta(provider: Provider, data: &str) -> Result<Vec<Delta>, Provi
     let mut out = Vec::new();
     match provider {
         Provider::OpenAi => {
-            if let Some(msg) = v.pointer("/error/message").and_then(Value::as_str) {
-                return Err(ProviderError::Stream(msg.into()));
+            if let Some(e) = v.get("error") {
+                return Err(stream_error(provider, e));
             }
             let delta = v.pointer("/choices/0/delta");
             if let Some(t) = delta.and_then(|d| d.get("content")).and_then(Value::as_str).filter(|s| !s.is_empty()) {
@@ -318,19 +344,25 @@ pub fn extract_delta(provider: Provider, data: &str) -> Result<Vec<Delta>, Provi
                     ));
                 }
             }
-            Some("error") => {
-                return Err(ProviderError::Stream(
-                    v.pointer("/error/message").and_then(Value::as_str).unwrap_or("Anthropic 串流錯誤").into(),
-                ))
+            // Claude cites the pages it used inside the text as well.
+            Some("content_block_delta")
+                if v.pointer("/delta/type").and_then(Value::as_str) == Some("citations_delta") =>
+            {
+                let c = v.pointer("/delta/citation");
+                out.extend(source(
+                    c.and_then(|c| c.get("title")).and_then(Value::as_str),
+                    c.and_then(|c| c.get("url")).and_then(Value::as_str),
+                ));
             }
+            Some("error") => return Err(stream_error(provider, v.get("error").unwrap_or(&Value::Null))),
             Some("message_delta") if v.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("refusal") => {
                 return Err(ProviderError::Stream("Claude 婉拒處理這段內容。可以改用其他服務試試。".into()));
             }
             _ => {}
         },
         Provider::Gemini => {
-            if let Some(msg) = v.pointer("/error/message").and_then(Value::as_str) {
-                return Err(ProviderError::Stream(msg.into()));
+            if let Some(e) = v.get("error") {
+                return Err(stream_error(provider, e));
             }
             if let Some(reason) = v.pointer("/promptFeedback/blockReason").and_then(Value::as_str) {
                 return Err(ProviderError::Stream(format!("Gemini 拒絕了這段內容（{reason}）")));
@@ -610,6 +642,26 @@ mod tests {
         assert_eq!(text(Provider::Gemini, d).as_deref(), Some("答案"));
         let blocked = r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#;
         assert!(extract_delta(Provider::Gemini, blocked).is_err());
+    }
+
+    #[test]
+    fn errors_inside_the_stream_read_like_api_errors() {
+        let g = r#"{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}"#;
+        let e = extract_delta(Provider::Gemini, g).unwrap_err();
+        assert!(e.is_transient());
+        assert!(e.to_string().starts_with("Gemini 的伺服器暫時忙碌"), "{e}");
+        let a = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        assert!(extract_delta(Provider::Anthropic, a).unwrap_err().is_transient());
+        let o = r#"{"error":{"message":"Something odd","type":"invalid_request_error","code":null}}"#;
+        let e = extract_delta(Provider::OpenAi, o).unwrap_err();
+        assert!(!e.is_transient());
+        assert_eq!(e.to_string(), "Something odd");
+    }
+
+    #[test]
+    fn claude_citations_are_sources() {
+        let c = r#"{"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://d.example","title":"D","cited_text":"x"}}}"#;
+        assert_eq!(extract_delta(Provider::Anthropic, c).unwrap(), vec![Delta::Source { title: "D".into(), url: "https://d.example".into() }]);
     }
 
     #[test]
