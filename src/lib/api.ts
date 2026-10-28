@@ -109,7 +109,7 @@ export interface PlatformInfo { os: string; wayland: boolean; exe: string }
 export const platformInfo = () => invoke<PlatformInfo>("platform_info");
 export const autostartGet = () => invoke<boolean>("autostart_get");
 export const autostartSet = (enabled: boolean) => invoke<void>("autostart_set", { enabled });
-/** The model a task uses: 解釋 and 搜尋 may use a stronger one (empty field: the main model). */
+/** The model a task uses: Explain and Search may use a stronger one (empty field: the main model). */
 export function modelForTask(s: Settings, p: Provider, task: Task): string {
   const explain = s.models[`${p}_explain` as const]?.trim();
   return task !== "translate" && explain ? explain : s.models[p];

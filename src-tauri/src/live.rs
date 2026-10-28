@@ -29,7 +29,7 @@ pub struct ScreenTarget {
     pub y: u32,
     pub w: u32,
     pub h: u32,
-    /// Shown in the caption bar: a window title, "全螢幕" or the region size.
+    /// Shown in the caption bar: a window title, "full screen" (全螢幕) or the region size.
     pub label: String,
 }
 

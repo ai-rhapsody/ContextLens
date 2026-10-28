@@ -9,7 +9,7 @@ import { ModelPicker } from "./ModelPicker";
 
 type Note = { kind: "ok" | "err"; text: string } | null;
 
-/** Defaults for the 解釋／搜尋 model; Gemini's Flash-Lite is too weak on facts. */
+/** Defaults for the Explain / Search model; Gemini's Flash-Lite is too weak on facts. */
 const EXPLAIN_DEFAULT: Record<Provider, string> = { gemini: "gemini-3.6-flash", openai: "", anthropic: "" };
 
 /** Providers with a real-time API, and which setting holds its model. */
