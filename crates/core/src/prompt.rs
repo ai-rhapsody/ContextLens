@@ -69,12 +69,118 @@ pub fn build_task(task: Task, tutor: bool, text: &str, media: Option<Media>, tar
 pub const FORMAT_RULE: &str = " Formatting: besides the required ## headings, use only **bold** and \"- \" bullet lists. \
      No other Markdown: no ### subheadings, tables, italics or code fences.";
 
-/// Appended when the user wants text already in their language translated into English.
-pub fn own_language_to_english(target: &str) -> String {
-    format!(
-        " Exception: if the content is already entirely in {target}, translate it into English instead \
-         (content that only mixes in some English words is not entirely in {target})."
-    )
+/// Appended to a translation: settles which language the text is in, so the model does not
+/// have to guess (it took kanji-heavy Japanese for Chinese, and translated it into English).
+/// `to_english`: text already in the user's language is translated into English.
+pub fn language_note(text: &str, has_media: bool, target: &str, to_english: bool) -> String {
+    let judged = if has_media || text.trim().is_empty() { None } else { is_own_language(text, target) };
+    match judged {
+        Some(true) if to_english => format!(
+            " The text is already in {target}, the reader's own language: translate it into English \
+             instead; anything else you write stays in {target}."
+        ),
+        Some(true) => String::new(),
+        Some(false) => format!(
+            " The text is not in {target}: translate all of it into {target}, even where it shares \
+             characters with {target}."
+        ),
+        // Pictures, or a language the script does not settle: the model judges.
+        None if to_english => format!(
+            " Exception: if the content is already entirely in {target}, translate it into English instead \
+             (content that only mixes in some English words is not entirely in {target})."
+        ),
+        None => String::new(),
+    }
+}
+
+/// Characters of each writing system in a text.
+#[derive(Default)]
+struct Scripts {
+    han: usize,
+    kana: usize,
+    hangul: usize,
+    latin: usize,
+    /// Latin letters with accents (é, ñ, ơ): another language than English.
+    accented: usize,
+    cyrillic: usize,
+    thai: usize,
+    /// Characters only simplified Chinese writes this way, and only traditional.
+    simplified: usize,
+    traditional: usize,
+    /// Kanji only Japanese writes (対, 円, 駅): Japanese even without kana, as in headlines.
+    japanese: usize,
+}
+
+/// Common characters that differ between the two Chinese scripts, as (traditional, simplified).
+const CHINESE_PAIRS: &[(char, char)] = &[
+    ('們', '们'), ('這', '这'), ('個', '个'), ('說', '说'), ('為', '为'), ('對', '对'), ('來', '来'),
+    ('時', '时'), ('會', '会'), ('過', '过'), ('還', '还'), ('沒', '没'), ('發', '发'), ('經', '经'),
+    ('麼', '么'), ('問', '问'), ('題', '题'), ('現', '现'), ('開', '开'), ('關', '关'), ('長', '长'),
+    ('學', '学'), ('實', '实'), ('國', '国'), ('動', '动'), ('點', '点'), ('東', '东'), ('從', '从'),
+    ('後', '后'), ('種', '种'), ('機', '机'), ('樣', '样'), ('進', '进'), ('將', '将'), ('與', '与'),
+    ('讓', '让'), ('當', '当'), ('號', '号'), ('錢', '钱'), ('車', '车'), ('電', '电'), ('話', '话'),
+    ('見', '见'), ('間', '间'), ('頭', '头'), ('聽', '听'), ('寫', '写'), ('買', '买'), ('賣', '卖'),
+    ('體', '体'), ('業', '业'), ('氣', '气'), ('書', '书'), ('員', '员'), ('報', '报'), ('兩', '两'),
+    ('應', '应'), ('認', '认'), ('記', '记'), ('邊', '边'), ('處', '处'), ('選', '选'), ('場', '场'),
+    ('戰', '战'), ('勝', '胜'), ('隊', '队'), ('優', '优'), ('爭', '争'), ('裡', '里'), ('灣', '湾'),
+];
+
+/// Common kanji in forms Chinese does not use.
+const JAPANESE_ONLY: &str = "対戦円図価駅楽薬広浜沢鉄転伝歳県帰込働畑峠辻枠払拡様検継続験児姫";
+
+fn scripts(text: &str) -> Scripts {
+    let mut s = Scripts::default();
+    for c in text.chars() {
+        match c {
+            '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' | '\u{F900}'..='\u{FAFF}' => {
+                s.han += 1;
+                if JAPANESE_ONLY.contains(c) {
+                    s.japanese += 1;
+                } else if CHINESE_PAIRS.iter().any(|&(t, _)| t == c) {
+                    s.traditional += 1;
+                } else if CHINESE_PAIRS.iter().any(|&(_, sc)| sc == c) {
+                    s.simplified += 1;
+                }
+            }
+            '\u{3040}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}' => s.kana += 1,
+            '\u{AC00}'..='\u{D7AF}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' => s.hangul += 1,
+            '\u{0400}'..='\u{04FF}' => s.cyrillic += 1,
+            '\u{0E00}'..='\u{0E7F}' => s.thai += 1,
+            c if c.is_ascii_alphabetic() => s.latin += 1,
+            '\u{00C0}'..='\u{024F}' if c.is_alphabetic() => s.accented += 1,
+            _ => {}
+        }
+    }
+    s
+}
+
+/// Whether the text is already in the user's language, judged by its writing system. `None`
+/// when the script cannot tell, e.g. French against Spanish.
+pub fn is_own_language(text: &str, target: &str) -> Option<bool> {
+    let s = scripts(text);
+    let code = crate::live::language_code(target)?;
+    let (lang, variant) = code.split_once('-').unwrap_or((code, ""));
+    // Short Latin names and abbreviations (iPhone, AI) do not make a Chinese sentence foreign.
+    let mostly = |n: usize| n > 0 && n * 2 > s.han + s.kana + s.hangul + s.latin + s.accented + s.cyrillic + s.thai;
+    Some(match lang {
+        "zh" => {
+            // One character in the other script's form is enough: Chinese text sticks to one,
+            // while Japanese mixes forms of both (会 and 優).
+            let other_script = match variant {
+                "Hant" | "TW" | "HK" | "MO" => s.simplified > 0,
+                "Hans" | "CN" | "SG" => s.traditional > 0,
+                _ => false,
+            };
+            s.kana == 0 && s.hangul == 0 && s.japanese == 0 && s.han >= s.latin && mostly(s.han) && !other_script
+        }
+        // Japanese writes kana in nearly every sentence, however many kanji it has.
+        "ja" => s.kana > 0 && s.hangul == 0 && mostly(s.han + s.kana),
+        "ko" => s.hangul > 0 && s.kana == 0 && mostly(s.hangul),
+        "en" => mostly(s.latin) && s.accented * 50 <= s.latin,
+        "ru" => mostly(s.cyrillic),
+        "th" => mostly(s.thai),
+        _ => return None,
+    })
 }
 
 fn build_task_inner(task: Task, tutor: bool, text: &str, media: Option<Media>, target: &str, web: bool) -> ChatRequest {
@@ -195,6 +301,41 @@ pub fn build(mode: Mode, text: &str, media: Option<Media>, target: &str) -> Chat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_writing_system_says_whose_language_a_text_is_in() {
+        let nhk = "大谷翔平選手は２８日、本拠地で行われた試合に先発出場し、第３打席で今季５０号ホームランを放った。";
+        let kanji_heavy = "巨人阿部監督就任会見、来季優勝目標明言。";
+        assert_eq!(is_own_language(nhk, "繁體中文"), Some(false));
+        assert_eq!(is_own_language("日本シリーズ第１戦　阪神対ソフトバンク", "繁體中文"), Some(false));
+        assert_eq!(is_own_language("我們今天要談定價策略。", "繁體中文"), Some(true));
+        assert_eq!(is_own_language("新款 iPhone 的 AI 功能這週上市。", "繁體中文"), Some(true));
+        assert_eq!(is_own_language("我们今天要谈定价策略，这个问题很重要。", "繁體中文"), Some(false));
+        assert_eq!(is_own_language("我们今天要谈定价策略，这个问题很重要。", "简体中文"), Some(true));
+        assert_eq!(is_own_language("This is a test of the new feature.", "繁體中文"), Some(false));
+        assert_eq!(is_own_language("오늘 날씨가 좋네요", "繁體中文"), Some(false));
+        assert_eq!(is_own_language(nhk, "日本語"), Some(true));
+        assert_eq!(is_own_language("This is a test.", "English"), Some(true));
+        assert_eq!(is_own_language("C'est déjà l'été à Montréal.", "English"), Some(false));
+        assert_eq!(is_own_language("Hola", "Español"), None);
+        // Headlines without kana: Japanese mixes both Chinese scripts, or uses its own kanji.
+        assert_eq!(is_own_language(kanji_heavy, "繁體中文"), Some(false));
+        assert_eq!(is_own_language("首位攻防戦　巨人対阪神", "繁體中文"), Some(false));
+        assert_eq!(is_own_language("首位攻防戦　巨人対阪神", "中文"), Some(false));
+        assert_eq!(is_own_language("巨人隊在主場擊敗阪神隊，拿下首勝。", "繁體中文"), Some(true));
+    }
+
+    #[test]
+    fn japanese_is_translated_not_turned_into_english() {
+        let nhk = "大谷翔平選手は今季５０号ホームランを放った。";
+        let note = language_note(nhk, false, "繁體中文", true);
+        assert!(note.contains("not in 繁體中文") && !note.contains("English"), "{note}");
+        let own = language_note("我們今天要談定價。", false, "繁體中文", true);
+        assert!(own.contains("into English"), "{own}");
+        assert_eq!(language_note("我們今天要談定價。", false, "繁體中文", false), "");
+        // A picture's language is left to the model.
+        assert!(language_note("", true, "繁體中文", true).contains("Exception"));
+    }
 
     fn image() -> Media {
         Media { mime: "image/png".into(), data_b64: "QUJD".into(), name: None }

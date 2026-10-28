@@ -823,8 +823,9 @@ async fn run_translation(
     };
     let web = contextlens_core::can_search(provider, &model);
     let mut req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
-    if task == Task::Translate && state.settings.lock().unwrap().own_language_to_english {
-        req.system.push_str(&prompt::own_language_to_english(&lang));
+    if task == Task::Translate {
+        let to_english = state.settings.lock().unwrap().own_language_to_english;
+        req.system.push_str(&prompt::language_note(&input.text, !req.media.is_empty(), &lang, to_english));
     }
 
     let mut full = String::new();
