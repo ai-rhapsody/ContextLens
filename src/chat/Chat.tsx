@@ -81,7 +81,7 @@ export function Chat() {
           )}
           <div className="ex first"><Answer text={convo.answer} task={convo.task} streaming={false} /></div>
           <Sources list={convo.sources.map(([title, url]) => ({ title, url }))} />
-          <Thread items={thread.items} />
+          <Thread items={thread.items} onRetry={thread.retry} />
         </div>
       </div>
 

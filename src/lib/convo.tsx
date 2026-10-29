@@ -74,6 +74,8 @@ export type Exchange = {
   sources: { title: string; url: string }[];
   state: "streaming" | "done" | "error";
   error?: string;
+  /** What was asked, so a failed exchange can be asked again. */
+  ask?: Ask;
 };
 
 export type Ask = { question: string } | { action: PhraseAction; phrase: string };
@@ -93,7 +95,7 @@ export function useThread(id: number | null) {
     if (id === null) return;
     const mine = ++run.current;
     const label = "question" in a ? a.question : a.phrase;
-    setItems((xs) => [...xs, { question: label, answer: "", sources: [], state: "streaming" }]);
+    setItems((xs) => [...xs, { question: label, answer: "", sources: [], state: "streaming", ask: a }]);
     const update = (f: (x: Exchange) => Exchange) =>
       setItems((xs) => (mine === run.current ? [...xs.slice(0, -1), f(xs[xs.length - 1])] : xs));
     followUp(id, a, (e: StreamEvent) => {
@@ -105,10 +107,18 @@ export function useThread(id: number | null) {
     }).catch((err) => update((x) => ({ ...x, state: "error", error: String(err) })));
   }, [id]);
 
-  return { items, ask, busy, reset };
+  /** Drops a failed exchange and asks it again at the end. */
+  const retry = useCallback((i: number) => {
+    const failed = items[i];
+    if (!failed?.ask || failed.state !== "error" || busy) return;
+    setItems((xs) => xs.filter((_, j) => j !== i));
+    ask(failed.ask);
+  }, [items, busy, ask]);
+
+  return { items, ask, retry, busy, reset };
 }
 
-export function Thread({ items }: { items: Exchange[] }) {
+export function Thread({ items, onRetry }: { items: Exchange[]; onRetry?: (i: number) => void }) {
   return (
     <>
       {items.map((x, i) => (
@@ -116,7 +126,12 @@ export function Thread({ items }: { items: Exchange[] }) {
           <p className="ex-q">{x.question}</p>
           {x.state === "streaming" && !x.answer && <p className="ex-wait faint">思考中…</p>}
           {x.answer && <div className="ex-a"><Answer text={x.answer} task="explain" streaming={x.state === "streaming"} /></div>}
-          {x.state === "error" && <div className="notice" role="alert">{x.error}</div>}
+          {x.state === "error" && (
+            <div className="notice" role="alert">
+              {x.error}
+              {x.ask && onRetry && <div><button className="btn" onClick={() => onRetry(i)}>重試</button></div>}
+            </div>
+          )}
           <Sources list={x.sources} />
         </div>
       ))}

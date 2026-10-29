@@ -233,3 +233,6 @@ export const openChat = (id: number) => invoke<void>("open_chat", { id });
 export const chatPending = () => invoke<number | null>("chat_pending");
 export const liveFollowUp = (input: string, output: string) => invoke<void>("live_follow_up", { input, output });
 export const liveStar = (input: string, output: string) => invoke<number>("live_star", { input, output });
+/** Versions, settings (no keys) and the recent local log, for a problem report. */
+export const diagnostics = () => invoke<string>("diagnostics");
+export const revealLog = () => invoke<void>("reveal_log");

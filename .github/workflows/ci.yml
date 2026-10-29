@@ -23,4 +23,29 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: cargo test -p contextlens-core
-      - run: cargo check -p contextlens
+      - run: cargo test -p contextlens
+
+  # Windows-only code (UI Automation, system audio) is compiled nowhere else before a release.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run build
+      - run: cargo test -p contextlens
+
+  # Known vulnerabilities in what ships: Rust crates, and npm packages outside the dev tools.
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-audit }
+      - run: cargo audit
+      - uses: actions/setup-node@v6
+        with: { node-version: 22 }
+      - run: npm audit --omit=dev --audit-level=high
