@@ -377,3 +377,4 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .glossary .gl-row .field { width: 100%; min-width: 0; }
 .hk-custom .hk-name { width: 120px; flex: none; }
 .hk-custom .grow { flex: 1; min-width: 0; }
+.h-star { color: var(--pill-warning-ink); }

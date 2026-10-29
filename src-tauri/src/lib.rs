@@ -972,6 +972,7 @@ async fn run_translation(
                 thread: vec![],
                 task: Some(task),
                 action: action.clone(),
+                starred: false,
             };
             let mut h = state.history.lock().unwrap();
             id = h.push_id(entry);
@@ -1189,6 +1190,7 @@ fn live_line_entry(input: &str, output: &str, provider: Provider, model: &str) -
         thread: vec![],
         task: Some(Task::Translate),
         action: None,
+        starred: true,
     }
 }
 
@@ -1361,6 +1363,57 @@ fn history_list(state: State<AppState>, query: String) -> Vec<HistoryEntry> {
 }
 
 #[tauri::command]
+fn history_star(app: AppHandle, state: State<AppState>, at_ms: u64, starred: bool) -> Result<(), String> {
+    let mut h = state.history.lock().unwrap();
+    if !h.set_starred(at_ms, starred) {
+        return Err("這筆紀錄已經不在了。".into());
+    }
+    store::save_history(&app, &h)?;
+    drop(h);
+    let _ = app.emit_to("main", "history-changed", ());
+    Ok(())
+}
+
+/// Writes the matching entries (only starred ones if asked) to the Downloads folder as a CSV
+/// for spreadsheets or a text file for Anki, shows it, and returns where it went.
+#[tauri::command]
+fn history_export(
+    app: AppHandle,
+    state: State<AppState>,
+    query: String,
+    starred_only: bool,
+    format: String,
+    tz_offset_min: i32,
+) -> Result<String, String> {
+    use contextlens_core::history::{to_anki, to_csv, MAX_ENTRIES};
+    use tauri_plugin_opener::OpenerExt;
+    let mut entries = state.history.lock().unwrap().search(&query, MAX_ENTRIES);
+    if starred_only {
+        entries.retain(|e| e.starred);
+    }
+    if entries.is_empty() {
+        return Err(if starred_only { "還沒有收藏的紀錄。" } else { "沒有可以匯出的紀錄。" }.into());
+    }
+    let (body, ext) = match format.as_str() {
+        "anki" => (to_anki(&entries), "txt"),
+        _ => (to_csv(&entries, |ms| diag::local_time(ms, tz_offset_min)), "csv"),
+    };
+    let dir = app.path().download_dir().or_else(|_| app.path().document_dir()).map_err(|e| e.to_string())?;
+    let date = &diag::local_time(now_ms(), tz_offset_min)[..10];
+    let stem = format!("ContextLens {}{} {date}", if starred_only { "收藏" } else { "紀錄" }, if ext == "txt" { " Anki" } else { "" });
+    let mut path = dir.join(format!("{stem}.{ext}"));
+    for n in 2.. {
+        if !path.exists() {
+            break;
+        }
+        path = dir.join(format!("{stem} ({n}).{ext}"));
+    }
+    std::fs::write(&path, body).map_err(|e| format!("無法寫入檔案：{e}"))?;
+    let _ = app.opener().reveal_item_in_dir(&path);
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
 fn history_delete(app: AppHandle, state: State<AppState>, at_ms: u64) -> Result<(), String> {
     let mut h = state.history.lock().unwrap();
     if h.remove(at_ms) {
@@ -1440,6 +1493,8 @@ pub fn run() {
             live_star,
             diagnostics,
             reveal_log,
+            history_star,
+            history_export,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

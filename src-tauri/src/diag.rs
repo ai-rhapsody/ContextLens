@@ -47,6 +47,13 @@ pub fn tail(n: usize) -> Vec<String> {
     lines[lines.len().saturating_sub(n)..].iter().map(|l| l.to_string()).collect()
 }
 
+/// `YYYY-MM-DD HH:MM` in the viewer's time zone. `offset_min` is JavaScript's
+/// `getTimezoneOffset()`: minutes from local time to UTC (-480 in Taiwan).
+pub fn local_time(ms: u64, offset_min: i32) -> String {
+    let secs = (ms / 1000) as i64 - i64::from(offset_min) * 60;
+    format_utc(secs.max(0) as u64)[..16].to_string()
+}
+
 fn utc_now() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     format_utc(secs)
@@ -76,5 +83,6 @@ mod tests {
         assert_eq!(format_utc(0), "1970-01-01 00:00:00Z");
         assert_eq!(format_utc(1_793_259_000), "2026-10-29 07:30:00Z");
         assert_eq!(format_utc(951_782_400), "2000-02-29 00:00:00Z");
+        assert_eq!(local_time(1_793_259_000_000, -480), "2026-10-29 15:30");
     }
 }

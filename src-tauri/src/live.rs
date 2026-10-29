@@ -726,6 +726,7 @@ fn save(app: &AppHandle, provider: Provider, model: &str, tutor: bool, mut t: Tr
         thread: vec![],
         task: Some(Task::Translate),
         action: None,
+        starred: false,
     };
     let mut h = state.history.lock().unwrap();
     h.push(entry);

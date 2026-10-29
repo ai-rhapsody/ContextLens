@@ -82,6 +82,8 @@ export interface HistoryEntry {
   /** Follow-up questions and answers, in order. */
   thread?: [string, string][];
   task?: Task | null;
+  action?: CustomAction | null;
+  starred?: boolean;
 }
 
 export interface WinRect { x: number; y: number; w: number; h: number; title: string }
@@ -143,6 +145,10 @@ export const cancelSnip = () => invoke<void>("cancel_snip");
 export const historyList = (query: string) => invoke<HistoryEntry[]>("history_list", { query });
 export const historyDelete = (atMs: number) => invoke<void>("history_delete", { atMs });
 export const historyClear = () => invoke<void>("history_clear");
+export const historyStar = (atMs: number, starred: boolean) => invoke<void>("history_star", { atMs, starred });
+/** Writes the matching entries to the Downloads folder; returns the file's path. */
+export const historyExport = (query: string, starredOnly: boolean, format: "csv" | "anki") =>
+  invoke<string>("history_export", { query, starredOnly, format, tzOffsetMin: new Date().getTimezoneOffset() });
 
 export async function keyStatus(): Promise<Record<Provider, boolean>> {
   const rows = await invoke<[Provider, boolean][]>("key_status");
