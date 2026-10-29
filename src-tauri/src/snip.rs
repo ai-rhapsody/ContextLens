@@ -43,6 +43,8 @@ pub struct Snip {
     /// What to do with the selection (for `Purpose::Translate`).
     pub task: contextlens_core::Task,
     pub tutor: bool,
+    /// The hotkey's own instruction, with `Task::Custom`.
+    pub custom: Option<contextlens_core::CustomAction>,
     pub shots: Vec<Shot>,
 }
 
@@ -89,7 +91,7 @@ pub fn take(tutor: bool, task: contextlens_core::Task, purpose: Purpose) -> Resu
     if shots.is_empty() {
         return Err(last_error.unwrap_or_else(|| "找不到螢幕".into()));
     }
-    Ok(Snip { purpose, task, tutor, shots })
+    Ok(Snip { purpose, task, tutor, custom: None, shots })
 }
 
 /// Every other app's visible window in screen coordinates, front-most first.

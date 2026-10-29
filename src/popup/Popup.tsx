@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  dataUrl, getSettings, hidePopup, modelForTask, openChat, providerInfo, PROVIDERS, runTranslation, setPopupPinned,
-  showSettings, takePendingCapture, TASKS, type Media, type Provider, type ProviderInfo, type Settings, type Task,
+  dataUrl, getSettings, hidePopup, historyStar, modelForTask, openChat, providerInfo, PROVIDERS, runTranslation, setPopupPinned,
+  showSettings, takePendingCapture, TASKS, type CustomAction, type Media, type Provider, type ProviderInfo, type Settings, type Task,
 } from "../lib/api";
 import { fileToMedia, KIND_LABEL, kindOf } from "../lib/files";
 import { parseSections } from "../lib/sections";
@@ -39,6 +39,10 @@ export function Popup() {
   const [override, setOverride] = useState<Provider | null>(null); // this request only
   const [convo, setConvo] = useState<number | null>(null); // follow-ups go to this conversation
   const [fallback, setFallback] = useState<string | null>(null); // search answered without the web
+  const [custom, setCustom] = useState<CustomAction | null>(null); // the hotkey's own action, as a tab
+  const [starred, setStarred] = useState(false);
+  const customRef = useRef<CustomAction | null>(null);
+  customRef.current = custom;
   const thread = useThread(convo);
   const bodyRef = useRef<HTMLDivElement>(null);
   useStickToBottom(bodyRef, thread.items);
@@ -66,6 +70,7 @@ export function Popup() {
     setOverride(via);
     setBlocked(null);
     setConvo(null);
+    setStarred(false);
     setFallback(null);
     thread.reset();
 
@@ -87,6 +92,7 @@ export function Popup() {
     setExpanded(false);
     setStartedAt(Date.now());
     setShowSkeleton(false);
+    const action = asTask === "custom" ? customRef.current : null;
     runTranslation(next, asTask, asTutor, (e) => {
       if (id !== run.current) return;
       if (e.kind === "delta") setResult((r) => r + e.text);
@@ -95,7 +101,7 @@ export function Popup() {
       else if (e.kind === "offline") { setFallback(e.reason); setResult(""); }
       else if (e.kind === "done") setStatus("done");
       else if (e.kind === "error") fail(e.message);
-    }, via).catch((err) => id === run.current && fail(String(err)));
+    }, via, action).catch((err) => id === run.current && fail(String(err)));
   }, [fail, thread.reset]);
 
   const pickUp = useCallback(async () => {
@@ -108,6 +114,8 @@ export function Popup() {
     setKept(false); // a fresh capture is a fresh peek
     setTutor(cap.tutor);
     setTask(cap.task);
+    setCustom(cap.custom);
+    customRef.current = cap.custom;
     if (cap.error) {
       setInput(null);
       setResult("");
@@ -236,6 +244,11 @@ export function Popup() {
               {t.label}
             </button>
           ))}
+          {custom && (
+            <button role="tab" aria-selected={task === "custom"} title={custom.instruction} onClick={() => switchTask("custom")}>
+              {custom.name || "自訂"}
+            </button>
+          )}
         </div>
         <span className="grow" data-tauri-drag-region />
         {task === "translate" && (
@@ -356,6 +369,17 @@ export function Popup() {
           {!pinned && kept && status !== "idle" && <span className="faint"> · Esc 關閉</span>}
         </span>
         <button className="btn quiet" onClick={() => fileInput.current?.click()} title="分析圖片、音訊或影片">檔案…</button>
+        {convo !== null && status === "done" && settings?.save_history && (
+          <button
+            className="btn quiet" aria-pressed={starred} title={starred ? "已收藏，可在歷史紀錄匯出" : "收藏到歷史紀錄，之後可以匯出成單字卡"}
+            onClick={() => {
+              const next = !starred;
+              setStarred(next);
+              setKept(true);
+              historyStar(convo, next).catch(() => setStarred(!next));
+            }}
+          >{starred ? "★" : "☆"}</button>
+        )}
         {convo !== null && status === "done" && (
           <button
             className="btn quiet" title="在對話視窗繼續討論"
@@ -378,7 +402,7 @@ export function Popup() {
       {status === "done" && convo !== null && (
         <SelectionMenu root={bodyRef} busy={thread.busy} onAsk={(a) => { setKept(true); thread.ask(a); }} />
       )}
-      {dragging && <div className="drop-veil">放開以{TASKS.find((t) => t.id === task)?.label}</div>}
+      {dragging && <div className="drop-veil">放開以{task === "custom" ? custom?.name || "自訂動作" : TASKS.find((t) => t.id === task)?.label}</div>}
     </div>
   );
 }

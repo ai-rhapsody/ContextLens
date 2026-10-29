@@ -66,7 +66,7 @@ impl Backend {
                     "type": "realtime",
                     "model": c.model,
                     "output_modalities": ["text"],
-                    "instructions": system_prompt(c.target_language, c.tutor, c.screen),
+                    "instructions": system_prompt(c.target_language, c.tutor, c.screen) + c.glossary,
                     "audio": { "input": {
                         "format": { "type": "audio/pcm", "rate": 24_000 },
                         "transcription": { "model": OPENAI_TRANSCRIBE },
@@ -192,6 +192,9 @@ pub struct LiveConfig<'a> {
     pub screen: ScreenMode,
     /// The app marks speech start and end (`Segmenter`) instead of the server's detection.
     pub manual_activity: bool,
+    /// The user's fixed renderings (`prompt::glossary_note`), added to the instructions.
+    /// The interpreter model takes no instructions, so it goes without.
+    pub glossary: &'a str,
 }
 
 pub fn system_prompt(target: &str, tutor: bool, screen: ScreenMode) -> String {
@@ -236,7 +239,7 @@ pub fn setup_message(c: &LiveConfig) -> Value {
     let mut setup = json!({
         "model": format!("models/{}", c.model.trim_start_matches("models/")),
         "generationConfig": { "responseModalities": [modality] },
-        "systemInstruction": { "parts": [{ "text": system_prompt(c.target_language, c.tutor, c.screen) }] },
+        "systemInstruction": { "parts": [{ "text": system_prompt(c.target_language, c.tutor, c.screen) + c.glossary }] },
         "inputAudioTranscription": {},
         // The app marks where each passage starts and ends (see `Segmenter`): the server only
         // ends a turn at a pause, so a speaker who never pauses would never be translated.
@@ -751,7 +754,7 @@ mod tests {
     fn cfg(text_output: bool) -> LiveConfig<'static> {
         LiveConfig {
             model: "gemini-3.8-live", target_language: "繁體中文", tutor: false, text_output,
-            resume_handle: None, screen: ScreenMode::None, manual_activity: true,
+            resume_handle: None, screen: ScreenMode::None, manual_activity: true, glossary: "",
         }
     }
 

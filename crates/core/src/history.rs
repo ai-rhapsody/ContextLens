@@ -26,9 +26,15 @@ pub struct HistoryEntry {
     /// Follow-up questions and their answers, in order.
     #[serde(default)]
     pub thread: Vec<(String, String)>,
-    /// What was asked for: `translate`, `explain` or `search`.
+    /// What was asked for: `translate`, `explain`, `search` or `custom`.
     #[serde(default)]
     pub task: Option<crate::settings::Task>,
+    /// For `custom`: the hotkey's instruction, so follow-ups keep it.
+    #[serde(default)]
+    pub action: Option<crate::settings::CustomAction>,
+    /// Kept for studying: shown with a star, exported to a vocabulary list.
+    #[serde(default)]
+    pub starred: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -70,6 +76,17 @@ impl History {
         self.entries[0].at_ms
     }
 
+    /// Stars or unstars an entry; false if the entry is gone.
+    pub fn set_starred(&mut self, at_ms: u64, starred: bool) -> bool {
+        match self.entries.iter_mut().find(|e| e.at_ms == at_ms) {
+            Some(e) => {
+                e.starred = starred;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn remove(&mut self, at_ms: u64) -> bool {
         let before = self.entries.len();
         self.entries.retain(|e| e.at_ms != at_ms);
@@ -104,6 +121,52 @@ impl History {
     }
 }
 
+/// The part of a result worth studying: the translation, explanation or identification
+/// section when the answer has headings, else all of it.
+pub fn lead(result: &str) -> String {
+    use crate::prompt::{H_EXPLAIN, H_TRANSLATION, H_WHAT};
+    for title in [H_TRANSLATION, H_EXPLAIN, H_WHAT] {
+        let mut lines = result.lines().skip_while(|l| l.trim() != format!("## {title}"));
+        if lines.next().is_some() {
+            let body: Vec<&str> = lines.take_while(|l| !l.starts_with("## ")).collect();
+            return body.join("\n").trim().to_string();
+        }
+    }
+    result.trim().to_string()
+}
+
+/// A spreadsheet of entries: time, kind, original, result, provider and model. Starts with a
+/// byte-order mark so Excel reads it as UTF-8.
+pub fn to_csv(entries: &[HistoryEntry], time: impl Fn(u64) -> String) -> String {
+    let cell = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let mut out = String::from("\u{FEFF}時間,類型,原文,結果,服務,模型\r\n");
+    for e in entries {
+        let row = [time(e.at_ms), e.kind.clone(), e.source.clone(), lead(&e.result), e.provider.display_name().into(), e.model.clone()];
+        out += &row.iter().map(|c| cell(c)).collect::<Vec<_>>().join(",");
+        out += "\r\n";
+    }
+    out
+}
+
+/// Flashcards for Anki's text import: the original on the front, the translation on the back.
+/// Pictures and recordings have no text to learn from and are left out.
+pub fn to_anki(entries: &[HistoryEntry]) -> String {
+    let field = |s: &str| {
+        s.trim()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('\t', " ")
+            .replace("\r\n", "\n")
+            .replace('\n', "<br>")
+    };
+    let mut out = String::from("#separator:tab\n#html:true\n#tags column:3\n");
+    for e in entries.iter().filter(|e| e.kind == "text" || e.kind == "live") {
+        out += &format!("{}\t{}\tContextLens\n", field(&e.source), field(&lead(&e.result)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,7 +184,34 @@ mod tests {
             sources: vec![],
             thread: vec![],
             task: None,
+            action: None,
+            starred: false,
         }
+    }
+
+    #[test]
+    fn stars_stick_to_their_entry() {
+        let mut h = History::default();
+        h.push(e(1, "a", "x"));
+        assert!(h.set_starred(1, true) && h.get(1).unwrap().starred);
+        assert!(!h.set_starred(99, true));
+    }
+
+    #[test]
+    fn exports_take_the_translation_and_escape_it() {
+        let tutor = e(1, "punch above\tits weight", "## 翻譯\n表現超出\n實力\n## 結構\n- 片語");
+        let live = HistoryEntry { kind: "live".into(), ..e(2, "hello", "你好") };
+        let image = HistoryEntry { kind: "image".into(), ..e(3, "chart.png", "## 說明\n上升<5%>") };
+        assert_eq!(lead(&tutor.result), "表現超出\n實力");
+        assert_eq!(lead("plain"), "plain");
+        let anki = to_anki(&[tutor.clone(), live, image.clone()]);
+        assert!(anki.starts_with("#separator:tab\n"));
+        assert!(anki.contains("punch above its weight\t表現超出<br>實力\tContextLens\n"));
+        assert!(anki.contains("hello\t你好\t") && !anki.contains("chart.png"));
+        let csv = to_csv(&[image, HistoryEntry { source: "say \"hi\"".into(), ..tutor }], |ms| ms.to_string());
+        assert!(csv.starts_with('\u{FEFF}'));
+        assert!(csv.contains("\"3\",\"image\",\"chart.png\",\"上升<5%>\""));
+        assert!(csv.contains("\"say \"\"hi\"\"\""));
     }
 
     #[test]

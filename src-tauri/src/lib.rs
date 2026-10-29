@@ -7,7 +7,7 @@ mod snip;
 mod store;
 
 use contextlens_core::{
-    caps, conversation, live::Backend, prompt, Caps, ChatRequest, Conversation, Delta, History, HistoryEntry,
+    caps, conversation, live::Backend, prompt, Caps, ChatRequest, Conversation, CustomAction, Delta, History, HistoryEntry,
     Hotkey, Media, Provider, Settings, Source, Task,
 };
 use std::collections::VecDeque;
@@ -32,6 +32,8 @@ struct Capture {
     media: Option<Media>,
     task: Task,
     tutor: bool,
+    /// The hotkey's own instruction, with `Task::Custom`.
+    custom: Option<CustomAction>,
     /// Set when capturing failed; the popup shows it instead of translating.
     error: Option<String>,
 }
@@ -452,6 +454,7 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
             idle_minutes: settings.live_idle_minutes,
             screen,
             notice,
+            glossary: prompt::glossary_note(&settings.glossary, None),
         },
     )?;
     *state.live.lock().unwrap() = Some(handle);
@@ -492,8 +495,9 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 fn trigger(app: AppHandle, hotkey: Hotkey) {
     tauri::async_runtime::spawn(async move {
         let (tutor, task) = (hotkey.tutor, hotkey.task);
+        let custom = hotkey.custom.clone().filter(|_| task == Task::Custom);
         let preset = hotkey.live_sources.clone();
-        let failed = |message: String| Capture { tutor, task, error: Some(message), ..Default::default() };
+        let failed = |message: String| Capture { tutor, task, custom: custom.clone(), error: Some(message), ..Default::default() };
         match hotkey.source {
             Source::Selection => {
                 // Let the user's fingers leave the hotkey before we press Copy.
@@ -512,14 +516,14 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
                     (_, Err(e)) => format!("selection: none ({e})"),
                 });
                 let capture = match text {
-                    Ok(text) => Capture { text, tutor, task, ..Default::default() },
+                    Ok(text) => Capture { text, tutor, task, custom: custom.clone(), ..Default::default() },
                     Err(e) => failed(e),
                 };
                 show_popup_at(&app, capture, span);
             }
             Source::ClipboardImage => {
                 let capture = match blocking(capture::clipboard_image).await {
-                    Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
+                    Ok(media) => Capture { media: Some(media), tutor, task, custom: custom.clone(), ..Default::default() },
                     Err(e) => failed(e),
                 };
                 show_popup(&app, capture);
@@ -553,7 +557,8 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
             }
             Source::Screen => {
                 match blocking(move || snip::take(tutor, task, snip::Purpose::Translate)).await {
-                    Ok(s) => {
+                    Ok(mut s) => {
+                        s.custom = custom.clone();
                         if let Err(e) = start_snip(&app, s) {
                             show_popup(&app, failed(e));
                         }
@@ -779,10 +784,10 @@ async fn finish_snip(
         let _ = app.emit_to("live", "live-changed", ()); // the caption bar re-reads its state
         return Ok(());
     }
-    let (tutor, task) = (s.tutor, s.task);
+    let (tutor, task, custom) = (s.tutor, s.task, s.custom.clone());
     let capture = match blocking(move || snip::crop(&shot, rect)).await {
-        Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
-        Err(e) => Capture { tutor, task, error: Some(e), ..Default::default() },
+        Ok(media) => Capture { media: Some(media), tutor, task, custom, ..Default::default() },
+        Err(e) => Capture { tutor, task, custom, error: Some(e), ..Default::default() },
     };
     show_popup(&app, capture);
     Ok(())
@@ -863,8 +868,11 @@ async fn run_translation(
     tutor: bool,
     // Use another provider for this request only, e.g. when the default cannot read video.
     provider: Option<Provider>,
+    // The hotkey's own instruction, with `Task::Custom`.
+    action: Option<CustomAction>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
+    let action = action.filter(|a| task == Task::Custom && !a.instruction.trim().is_empty());
     let gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let (provider, model, lang, keep) = {
         let s = state.settings.lock().unwrap();
@@ -876,11 +884,19 @@ async fn run_translation(
         None => None,
     };
     let web = contextlens_core::can_search(provider, &model);
-    let mut req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
+    let mut req = match &action {
+        Some(a) => prompt::custom(a, &input.text, media, &lang),
+        None => prompt::build_task(task, tutor, &input.text, media, &lang, web),
+    };
+    let (to_english, glossary) = {
+        let s = state.settings.lock().unwrap();
+        (s.own_language_to_english, s.glossary.clone())
+    };
     if task == Task::Translate {
-        let to_english = state.settings.lock().unwrap().own_language_to_english;
         req.system.push_str(&prompt::language_note(&input.text, !req.media.is_empty(), &lang, to_english));
     }
+    let scope = req.media.is_empty().then_some(input.text.as_str());
+    req.system.push_str(&prompt::glossary_note(&glossary, scope));
 
     let mut full = String::new();
     let mut sources: Vec<(String, String)> = Vec::new();
@@ -918,6 +934,7 @@ async fn run_translation(
             reason: "這次無法上網搜尋（免費金鑰通常不支援搜尋，或已超過搜尋額度），以下是模型本身的知識，可能不是最新資訊。".into(),
         });
         req = prompt::build_task(task, tutor, &input.text, req.media.first().cloned(), &lang, false);
+        req.system.push_str(&prompt::glossary_note(&glossary, scope));
         result = stream_raw(&state, provider, &model, &req, Some(gen), |d| match d {
             Delta::Text(t) => {
                 full.push_str(&t);
@@ -954,6 +971,8 @@ async fn run_translation(
                 sources: sources.clone(),
                 thread: vec![],
                 task: Some(task),
+                action: action.clone(),
+                starred: false,
             };
             let mut h = state.history.lock().unwrap();
             id = h.push_id(entry);
@@ -976,6 +995,7 @@ async fn run_translation(
                 sources,
                 thread: vec![],
                 media_lost: false,
+                action,
             },
         );
         let _ = on_event.send(StreamEvent::Conversation { id });
@@ -1022,6 +1042,7 @@ fn find_convo(state: &AppState, id: u64) -> Option<Conversation> {
         sources: e.sources.clone(),
         thread: e.thread.clone(),
         media_lost: media_kind,
+        action: e.action.clone(),
     })
 }
 
@@ -1048,9 +1069,14 @@ async fn follow_up(
         (_, Some(a), Some(p)) if !p.trim().is_empty() => conversation::about_selection(&a, p.trim()),
         _ => return Err("問題是空的".into()),
     };
-    let lang = state.settings.lock().unwrap().target_language.clone();
+    let (lang, glossary) = {
+        let s = state.settings.lock().unwrap();
+        (s.target_language.clone(), s.glossary.clone())
+    };
     let web = contextlens_core::can_search(convo.provider, &convo.model);
-    let req = convo.follow_up(&question, &lang, web);
+    let mut req = convo.follow_up(&question, &lang, web);
+    let about = format!("{}\n{}\n{question}", convo.text, convo.answer);
+    req.system.push_str(&prompt::glossary_note(&glossary, (convo.media.is_none() && !convo.media_lost).then_some(about.as_str())));
     let _ = on_event.send(StreamEvent::Question { text: question.clone() });
 
     let mut answer = String::new();
@@ -1143,6 +1169,7 @@ fn live_follow_up(app: AppHandle, state: State<AppState>, input: String, output:
             sources: vec![],
             thread: vec![],
             media_lost: false,
+            action: None,
         },
     );
     open_chat_window(&app, id);
@@ -1162,6 +1189,8 @@ fn live_line_entry(input: &str, output: &str, provider: Provider, model: &str) -
         sources: vec![],
         thread: vec![],
         task: Some(Task::Translate),
+        action: None,
+        starred: true,
     }
 }
 
@@ -1334,6 +1363,73 @@ fn history_list(state: State<AppState>, query: String) -> Vec<HistoryEntry> {
 }
 
 #[tauri::command]
+fn history_star(app: AppHandle, state: State<AppState>, at_ms: u64, starred: bool) -> Result<(), String> {
+    let mut h = state.history.lock().unwrap();
+    if !h.set_starred(at_ms, starred) {
+        return Err("這筆紀錄已經不在了。".into());
+    }
+    store::save_history(&app, &h)?;
+    drop(h);
+    let _ = app.emit_to("main", "history-changed", ());
+    Ok(())
+}
+
+/// Writes the matching entries (only starred ones if asked) to the Downloads folder as a CSV
+/// for spreadsheets or a text file for Anki, shows it, and returns where it went.
+#[tauri::command]
+fn history_export(
+    app: AppHandle,
+    state: State<AppState>,
+    query: String,
+    starred_only: bool,
+    format: String,
+    tz_offset_min: i32,
+) -> Result<String, String> {
+    use contextlens_core::history::{to_anki, to_csv, MAX_ENTRIES};
+    let mut entries = state.history.lock().unwrap().search(&query, MAX_ENTRIES);
+    if starred_only {
+        entries.retain(|e| e.starred);
+    }
+    if entries.is_empty() {
+        return Err(if starred_only { "還沒有收藏的紀錄。" } else { "沒有可以匯出的紀錄。" }.into());
+    }
+    let (body, ext) = match format.as_str() {
+        "anki" => (to_anki(&entries), "txt"),
+        _ => (to_csv(&entries, |ms| diag::local_time(ms, tz_offset_min)), "csv"),
+    };
+    let date = &diag::local_time(now_ms(), tz_offset_min)[..10];
+    let stem = format!("ContextLens {}{} {date}", if starred_only { "收藏" } else { "紀錄" }, if ext == "txt" { " Anki" } else { "" });
+    write_download(&app, &stem, ext, &body)
+}
+
+/// Writes a file to the Downloads folder (Documents if there is none) under a name not yet
+/// taken, shows it in the file manager, and returns its path.
+fn write_download(app: &AppHandle, stem: &str, ext: &str, body: &str) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app.path().download_dir().or_else(|_| app.path().document_dir()).map_err(|e| e.to_string())?;
+    let stem: String = stem.chars().filter(|c| !"/\\:*?\"<>|".contains(*c)).collect();
+    let mut path = dir.join(format!("{stem}.{ext}"));
+    for n in 2.. {
+        if !path.exists() {
+            break;
+        }
+        path = dir.join(format!("{stem} ({n}).{ext}"));
+    }
+    std::fs::write(&path, body).map_err(|e| format!("無法寫入檔案：{e}"))?;
+    let _ = app.opener().reveal_item_in_dir(&path);
+    Ok(path.display().to_string())
+}
+
+/// Saves the Live captions as text or subtitles.
+#[tauri::command]
+fn save_captions(app: AppHandle, stem: String, ext: String, content: String) -> Result<String, String> {
+    if !matches!(ext.as_str(), "txt" | "srt") {
+        return Err("不支援這種檔案格式。".into());
+    }
+    write_download(&app, &stem, &ext, &content)
+}
+
+#[tauri::command]
 fn history_delete(app: AppHandle, state: State<AppState>, at_ms: u64) -> Result<(), String> {
     let mut h = state.history.lock().unwrap();
     if h.remove(at_ms) {
@@ -1413,6 +1509,9 @@ pub fn run() {
             live_star,
             diagnostics,
             reveal_log,
+            history_star,
+            history_export,
+            save_captions,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

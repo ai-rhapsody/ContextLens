@@ -4,6 +4,7 @@ import { getSettings, openLive, saveSettings, type Settings } from "../lib/api";
 import { prettyAccelerator } from "../lib/hotkey";
 import { checkForUpdate, type UpdateState } from "../lib/updater";
 import { GeneralPage } from "./GeneralPage";
+import { GlossaryPage } from "./GlossaryPage";
 import { HistoryPage } from "./HistoryPage";
 import { HotkeysPage } from "./HotkeysPage";
 import { ModelsPage } from "./ModelsPage";
@@ -13,6 +14,7 @@ const PAGES = [
   { id: "general", label: "一般" },
   { id: "models", label: "模型與金鑰" },
   { id: "hotkeys", label: "熱鍵" },
+  { id: "glossary", label: "詞彙表" },
   { id: "history", label: "歷史紀錄" },
   { id: "updates", label: "更新" },
 ] as const;
@@ -87,6 +89,7 @@ export function SettingsApp() {
           {page === "general" && <GeneralPage settings={settings} commit={commit} />}
           {page === "models" && <ModelsPage settings={settings} commit={commit} />}
           {page === "hotkeys" && <HotkeysPage settings={settings} commit={commit} />}
+          {page === "glossary" && <GlossaryPage settings={settings} commit={commit} />}
           {page === "history" && <HistoryPage settings={settings} onOpenGeneral={() => setPage("general")} />}
           {page === "updates" && <UpdatesPage state={update} setState={setUpdate} />}
           <div className={`status-line ${status?.kind ?? ""}`} role="status">{status?.text}</div>

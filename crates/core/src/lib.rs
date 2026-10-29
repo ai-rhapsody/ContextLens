@@ -17,7 +17,7 @@ pub use history::{History, HistoryEntry};
 pub use media::{Media, MediaKind};
 pub use provider::{can_search, stream_completion, ChatRequest, Delta, ProviderError, Turn};
 pub use reqwest;
-pub use settings::{Hotkey, LiveSource, Provider, Settings, Source, Task};
+pub use settings::{CustomAction, GlossaryEntry, Hotkey, LiveSource, Provider, Settings, Source, Task};
 
 /// One shared HTTP client. No total timeout, because streams can run long;
 /// instead a stalled connection fails after 90 s without data (video can take a while).

@@ -12,14 +12,18 @@
 - [x] Live mode, step 1 and 2: microphone and system audio (Windows loopback) to Gemini Live, caption bar, tutor notes, idle auto-pause, session resumption, history
 - [x] Live mode, step 3: screen frames from a picked region, window or monitor; context for speech, or a screen reader on its own; only changed frames are sent; the caption bar is excluded from capture
 
+- [x] Follow-up questions in the popup and a conversation window
+- [x] Launch at login
+- [x] Custom actions: a user-written instruction per hotkey
+- [x] Glossary of fixed renderings, sent with requests and Live
+- [x] Vocabulary: star history items, export to CSV or Anki
+- [x] Live: caption size, export to TXT or SRT
+- [x] Local diagnostics log and a copy-diagnostics button
+
 ## Next
 - [ ] Live: follow a window when it moves (today the picked rectangle is fixed)
 - [ ] Live: system audio on macOS (ScreenCaptureKit) and Linux (PulseAudio monitor)
 - [ ] Live: honour HTTPS proxies for the WebSocket connection
-- [ ] Follow-up questions in the popup ("ask about this")
 - [ ] Pronunciation (text to speech) for the source text
-- [ ] Vocabulary notebook: star history items, export to Anki CSV
-- [ ] Custom actions: user-written prompts per hotkey (summarise, rewrite, explain code)
-- [ ] Launch at login
 - [ ] Screen recording clips (video capture of a region)
 - [ ] Wayland: global shortcuts through the XDG portal
