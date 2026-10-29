@@ -10,8 +10,11 @@
     "noUnusedParameters": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "resolveJsonModule": true,
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  // Test tooling that reads the source tree with Node; vitest compiles it.
+  "exclude": ["src/locales/keys.ts", "src/locales/locales.test.ts"]
 }

@@ -125,8 +125,10 @@ impl History {
 /// section when the answer has headings, else all of it.
 pub fn lead(result: &str) -> String {
     use crate::prompt::{H_EXPLAIN, H_TRANSLATION, H_WHAT};
-    for title in [H_TRANSLATION, H_EXPLAIN, H_WHAT] {
-        let mut lines = result.lines().skip_while(|l| l.trim() != format!("## {title}"));
+    for key in [H_TRANSLATION, H_EXPLAIN, H_WHAT] {
+        // Answers are headed in the interface language of their day.
+        let titles = crate::i18n::variants(key);
+        let mut lines = result.lines().skip_while(|l| !l.strip_prefix("## ").is_some_and(|t| titles.iter().any(|x| x == t.trim())));
         if lines.next().is_some() {
             let body: Vec<&str> = lines.take_while(|l| !l.starts_with("## ")).collect();
             return body.join("\n").trim().to_string();
@@ -139,7 +141,8 @@ pub fn lead(result: &str) -> String {
 /// byte-order mark so Excel reads it as UTF-8.
 pub fn to_csv(entries: &[HistoryEntry], time: impl Fn(u64) -> String) -> String {
     let cell = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-    let mut out = String::from("\u{FEFF}時間,類型,原文,結果,服務,模型\r\n");
+    let head = [crate::t!("時間"), crate::t!("類型"), crate::t!("原文"), crate::t!("結果"), crate::t!("服務"), crate::t!("模型")];
+    let mut out = format!("\u{FEFF}{}\r\n", head.iter().map(|h| cell(h)).collect::<Vec<_>>().join(","));
     for e in entries {
         let row = [time(e.at_ms), e.kind.clone(), e.source.clone(), lead(&e.result), e.provider.display_name().into(), e.model.clone()];
         out += &row.iter().map(|c| cell(c)).collect::<Vec<_>>().join(",");

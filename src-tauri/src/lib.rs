@@ -7,8 +7,11 @@ mod snip;
 mod store;
 
 use contextlens_core::{
-    caps, conversation, live::Backend, prompt, Caps, ChatRequest, Conversation, CustomAction, Delta, History, HistoryEntry,
-    Hotkey, Media, Provider, Settings, Source, Task,
+    caps, conversation,
+    i18n::{self, Locale},
+    live::Backend,
+    prompt, t, Caps, ChatRequest, Conversation, CustomAction, Delta, History, HistoryEntry, Hotkey, Media, Provider,
+    Settings, Source, Task,
 };
 use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
@@ -240,7 +243,7 @@ fn autostart_set(app: AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let l = app.autolaunch();
     let r = if enabled { l.enable() } else { l.disable() };
-    r.map_err(|e| format!("無法變更開機啟動：{e}"))
+    r.map_err(|e| t!("無法變更開機啟動：{e}", e = e))
 }
 
 /// Overlay windows are "snip-<monitor index>".
@@ -278,7 +281,7 @@ fn open_snip_windows(app: &AppHandle, monitors: &[(i32, i32, u32, u32)]) -> Resu
     let mut focus = None;
     for (i, &(mx, my, mw, mh)) in monitors.iter().enumerate() {
         let win = WebviewWindowBuilder::new(app, format!("snip-{i}"), WebviewUrl::App("index.html".into()))
-            .title("ContextLens 擷取")
+            .title(t!("ContextLens 擷取"))
             .decorations(false)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -379,12 +382,12 @@ fn pick_engine(s: &Settings, audio: bool, interpret: bool) -> Result<live::Engin
         }
     }
     Err(match (audio, s.live_provider) {
-        (true, Some(p)) => format!(
-            "{} 沒有可用的即時模型或金鑰。到「模型與金鑰」設定即時模型，或在字幕列改用其他服務。",
-            p.display_name()
+        (true, Some(p)) => t!(
+            "{provider} 沒有可用的即時模型或金鑰。到「模型與金鑰」設定即時模型，或在字幕列改用其他服務。",
+            provider = p.display_name()
         ),
-        (true, None) => "聽聲音需要 Gemini 或 ChatGPT 的金鑰和即時模型。到「模型與金鑰」設定。".into(),
-        (false, _) => "看螢幕需要一個能讀圖片的模型和它的金鑰。".into(),
+        (true, None) => t!("聽聲音需要 Gemini 或 ChatGPT 的金鑰和即時模型。到「模型與金鑰」設定。"),
+        (false, _) => t!("看螢幕需要一個能讀圖片的模型和它的金鑰。"),
     })
 }
 
@@ -394,7 +397,7 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
         old.stop();
     }
     if sources.is_empty() {
-        return Err("至少要開一個來源。".into());
+        return Err(t!("至少要開一個來源。"));
     }
     let mut notice: Option<String> = None;
     let mut sources = sources;
@@ -405,11 +408,11 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
             if !sources.contains(&live::LiveSource::System) {
                 sources.push(live::LiveSource::System);
             }
-            notice = Some("找不到麥克風，改聽系統聲音（電腦正在播放的聲音）。".into());
+            notice = Some(t!("找不到麥克風，改聽系統聲音（電腦正在播放的聲音）。"));
         } else if sources.is_empty() {
-            return Err("找不到麥克風。接上麥克風後再按「開始」，或改用「螢幕」。".into());
+            return Err(t!("找不到麥克風。接上麥克風後再按「開始」，或改用「螢幕」。"));
         } else {
-            notice = Some("找不到麥克風，這次不聽麥克風。".into());
+            notice = Some(t!("找不到麥克風，這次不聽麥克風。"));
         }
         let _ = app.emit_to("live", "live-changed", ());
     }
@@ -432,7 +435,7 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
         Err(why) if audio && sources.contains(&live::LiveSource::Screen) => {
             sources.retain(|s| *s == live::LiveSource::Screen);
             let e = pick_engine(&settings, false, false)?;
-            notice = Some(format!("{why} 這次先只看螢幕。"));
+            notice = Some(t!("{why} 這次先只看螢幕。", why = why));
             e
         }
         Err(why) => return Err(why),
@@ -478,13 +481,13 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Result<(), String> 
             }
         });
         if let Err(e) = r {
-            failed.push(format!("{}（{e}）", hk.accelerator));
+            failed.push(t!("{key}（{reason}）", key = hk.accelerator, reason = e));
         }
     }
     if failed.is_empty() {
         Ok(())
     } else {
-        Err(format!("無法註冊熱鍵 {}，可能已被其他程式使用。", failed.join("、")))
+        Err(t!("無法註冊熱鍵 {keys}，可能已被其他程式使用。", keys = failed.join(&t!("、"))))
     }
 }
 
@@ -598,8 +601,50 @@ fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings)
         return Err(e);
     }
     store::save(&app, &settings)?;
-    *state.settings.lock().unwrap() = settings;
+    let language_changed = state.settings.lock().unwrap().ui_language != settings.ui_language;
+    *state.settings.lock().unwrap() = settings.clone();
+    if language_changed {
+        apply_language(&app, &settings);
+    }
     Ok(())
+}
+
+/// The interface language: the one chosen in settings, else the system's.
+fn interface_locale(s: &Settings) -> Locale {
+    if s.ui_language.trim().is_empty() {
+        Locale::from_tag(&sys_locale::get_locale().unwrap_or_default())
+    } else {
+        Locale::from_tag(&s.ui_language)
+    }
+}
+
+/// Switches the interface language: Rust's messages, the tray menu, and every open window.
+fn apply_language(app: &AppHandle, s: &Settings) {
+    i18n::set_locale(interface_locale(s));
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(app)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+    let _ = app.emit("locale-changed", ());
+}
+
+/// The interface language's tag, for the windows to pick their texts.
+#[tauri::command]
+fn ui_locale() -> &'static str {
+    i18n::locale().tag()
+}
+
+const TRAY_ID: &str = "main";
+
+fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    Menu::with_items(
+        app,
+        &[
+            &MenuItem::with_id(app, "translator", t!("開啟翻譯視窗"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "live", t!("Live 即時翻譯"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "settings", t!("開啟 ContextLens"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "quit", t!("結束 ContextLens"), true, None::<&str>)?,
+        ],
+    )
 }
 
 #[derive(Deserialize)]
@@ -611,7 +656,7 @@ struct KeyArgs {
 #[tauri::command]
 async fn set_api_key(args: KeyArgs, key: String) -> Result<(), String> {
     if key.trim().is_empty() {
-        return Err("金鑰不能是空的".into());
+        return Err(t!("金鑰不能是空的"));
     }
     secrets::set(args.provider, &key)
 }
@@ -621,27 +666,34 @@ async fn delete_api_key(args: KeyArgs) -> Result<(), String> {
     secrets::delete(args.provider)
 }
 
-/// Which providers have a key stored. The keys themselves never leave Rust.
-/// What a problem report needs: versions, the settings that matter (no keys), and the recent log.
+/// What a problem report needs: versions, the settings that matter (no keys), and the recent
+/// log. In English whatever the interface language, for whoever reads the report.
 #[tauri::command]
 fn diagnostics(state: State<AppState>) -> String {
     let s = state.settings.lock().unwrap().clone();
     let keys: Vec<String> = Provider::ALL
         .iter()
-        .map(|p| format!("{} {}", p.display_name(), if secrets::get(*p).is_some() { "有" } else { "無" }))
+        .map(|p| format!("{} {}", p.display_name(), if secrets::get(*p).is_some() { "yes" } else { "no" }))
         .collect();
     let m = &s.models;
     let mut out = vec![
         format!("ContextLens {} · {} {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH),
-        format!("目標語言：{} · 預設服務：{} · 金鑰：{}", s.target_language, s.provider.display_name(), keys.join("、")),
         format!(
-            "模型：Gemini {} / {} · ChatGPT {} / {} · Claude {} / {}",
+            "Interface: {} · target language: {} · default provider: {} · keys: {}",
+            contextlens_core::i18n::locale().tag(),
+            s.target_language,
+            s.provider.display_name(),
+            keys.join(", ")
+        ),
+        format!(
+            "Models: Gemini {} / {} · ChatGPT {} / {} · Claude {} / {}",
             m.gemini, m.gemini_explain, m.openai, m.openai_explain, m.anthropic, m.anthropic_explain
         ),
-        format!("Live：{} / {} / 口譯 {} · 來源 {:?}", m.gemini_live, m.openai_realtime, m.gemini_translate, s.live_sources),
-        format!("已是我的語言時翻成英文：{}", if s.own_language_to_english { "開" } else { "關" }),
+        format!("Live: {} / {} / interpreter {} · sources {:?}", m.gemini_live, m.openai_realtime, m.gemini_translate, s.live_sources),
+        format!("Own language to English: {}", if s.own_language_to_english { "on" } else { "off" }),
+        format!("Glossary entries: {}", s.glossary.len()),
         String::new(),
-        "最近的記錄：".into(),
+        "Recent log:".into(),
     ];
     out.extend(diag::tail(150));
     out.join("\n")
@@ -651,13 +703,14 @@ fn diagnostics(state: State<AppState>) -> String {
 #[tauri::command]
 fn reveal_log(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let path = diag::path().ok_or("記錄檔還沒建立")?;
+    let path = diag::path().ok_or_else(|| t!("記錄檔還沒建立"))?;
     if !path.exists() {
         diag::log("log opened");
     }
     app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
+/// Which providers have a key stored. The keys themselves never leave Rust.
 #[tauri::command]
 async fn key_status() -> Vec<(Provider, bool)> {
     Provider::ALL.iter().map(|p| (*p, secrets::get(*p).is_some())).collect()
@@ -738,9 +791,9 @@ fn show_settings(app: AppHandle) {
 /// The overlay asks for its own monitor's screenshot; its window label says which.
 #[tauri::command]
 fn snip_view(window: WebviewWindow, state: State<AppState>) -> Result<snip::SnipView, String> {
-    let index = snip_index(window.label()).ok_or("不是擷取視窗")?;
+    let index = snip_index(window.label()).ok_or_else(|| t!("不是擷取視窗"))?;
     let guard = state.snip.lock().unwrap();
-    snip::view(guard.as_ref().ok_or("沒有進行中的擷取")?, index)
+    snip::view(guard.as_ref().ok_or_else(|| t!("沒有進行中的擷取"))?, index)
 }
 
 #[tauri::command]
@@ -750,20 +803,20 @@ async fn finish_snip(
     rect: snip::Rect,
     label: Option<String>,
 ) -> Result<(), String> {
-    let index = snip_index(window.label()).ok_or("不是擷取視窗")?;
-    let mut s = app.state::<AppState>().snip.lock().unwrap().take().ok_or("沒有進行中的擷取")?;
+    let index = snip_index(window.label()).ok_or_else(|| t!("不是擷取視窗"))?;
+    let mut s = app.state::<AppState>().snip.lock().unwrap().take().ok_or_else(|| t!("沒有進行中的擷取"))?;
     close_snip_windows(&app);
     if index >= s.shots.len() {
-        return Err("沒有這個螢幕".into());
+        return Err(t!("沒有這個螢幕"));
     }
     let shot = s.shots.swap_remove(index);
     if s.purpose == snip::Purpose::LiveTarget {
-        let (x, y, w, h) = snip::clamp(rect, shot.image.width(), shot.image.height()).ok_or("選取範圍太小")?;
+        let (x, y, w, h) = snip::clamp(rect, shot.image.width(), shot.image.height()).ok_or_else(|| t!("選取範圍太小"))?;
         let target = live::ScreenTarget {
             monitor_x: shot.monitor_x,
             monitor_y: shot.monitor_y,
             x, y, w, h,
-            label: label.unwrap_or_else(|| format!("區域 {w}×{h}")),
+            label: label.unwrap_or_else(|| t!("區域 {w}×{h}", w = w, h = h)),
         };
         let state = app.state::<AppState>();
         *state.live_screen.lock().unwrap() = Some(target);
@@ -831,9 +884,9 @@ async fn stream_raw(
     mut emit: impl FnMut(Delta) -> bool,
 ) -> Result<(), contextlens_core::ProviderError> {
     let key = secrets::get(provider).ok_or_else(|| {
-        contextlens_core::ProviderError::Unsupported(format!(
-            "還沒設定 {} 的 API 金鑰。到「模型與金鑰」貼上金鑰。",
-            provider.display_name()
+        contextlens_core::ProviderError::Unsupported(t!(
+            "還沒設定 {provider} 的 API 金鑰。到「模型與金鑰」貼上金鑰。",
+            provider = provider.display_name()
         ))
     })?;
     let mut sources = 0;
@@ -931,7 +984,7 @@ async fn run_translation(
     // 429. Answer from the model's own knowledge instead, and say so.
     if req.web_search && full.is_empty() && result.as_ref().is_err_and(|e| e.is_rate_limited()) {
         let _ = on_event.send(StreamEvent::Offline {
-            reason: "這次無法上網搜尋（免費金鑰通常不支援搜尋，或已超過搜尋額度），以下是模型本身的知識，可能不是最新資訊。".into(),
+            reason: t!("這次無法上網搜尋（免費金鑰通常不支援搜尋，或已超過搜尋額度），以下是模型本身的知識，可能不是最新資訊。"),
         });
         req = prompt::build_task(task, tutor, &input.text, req.media.first().cloned(), &lang, false);
         req.system.push_str(&prompt::glossary_note(&glossary, scope));
@@ -956,7 +1009,7 @@ async fn run_translation(
             contextlens_core::MediaKind::Audio => "audio",
             contextlens_core::MediaKind::Video => "video",
         });
-        let label = m.map(|m| m.name.clone().unwrap_or_else(|| m.kind().map_or("檔案", |k| k.label()).into()));
+        let label = m.map(|m| m.name.clone().unwrap_or_else(|| m.kind().map_or_else(|| t!("檔案"), |k| k.label())));
         let mut id = now_ms();
         if keep {
             let entry = HistoryEntry {
@@ -1063,11 +1116,11 @@ async fn follow_up(
     phrase: Option<String>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
-    let convo = find_convo(&state, id).ok_or("找不到這段對話，可能已從歷史紀錄刪除。")?;
+    let convo = find_convo(&state, id).ok_or_else(|| t!("找不到這段對話，可能已從歷史紀錄刪除。"))?;
     let question = match (question, action, phrase) {
         (Some(q), _, _) if !q.trim().is_empty() => q.trim().to_string(),
         (_, Some(a), Some(p)) if !p.trim().is_empty() => conversation::about_selection(&a, p.trim()),
-        _ => return Err("問題是空的".into()),
+        _ => return Err(t!("問題是空的")),
     };
     let (lang, glossary) = {
         let s = state.settings.lock().unwrap();
@@ -1217,20 +1270,20 @@ async fn test_live(app: AppHandle, state: State<'_, AppState>, args: KeyArgs) ->
         (s.live_model_for(args.provider).map(String::from), s.target_language.clone())
     };
     let backend = contextlens_core::live::Backend::for_provider(args.provider)
-        .ok_or_else(|| format!("{} 沒有即時 API。", args.provider.display_name()))?;
-    let model = model.filter(|m| !m.trim().is_empty()).ok_or("先選一個即時模型。")?;
-    let key = secrets::get(args.provider).ok_or("先貼上並儲存 API 金鑰。")?;
+        .ok_or_else(|| t!("{provider} 沒有即時 API。", provider = args.provider.display_name()))?;
+    let model = model.filter(|m| !m.trim().is_empty()).ok_or_else(|| t!("先選一個即時模型。"))?;
+    let key = secrets::get(args.provider).ok_or_else(|| t!("先貼上並儲存 API 金鑰。"))?;
     live::probe(&app, backend, &model, &key, &target).await?;
     let interpreter = state.settings.lock().unwrap().models.gemini_translate.trim().to_string();
     if args.provider != Provider::Gemini || interpreter.is_empty() {
         return Ok(model);
     }
     if live::language_code(&target).is_none() {
-        return Ok(format!("{model}；口譯模型不支援「{target}」，Live 會一律用 {model}"));
+        return Ok(t!("{model}；口譯模型不支援「{target}」，Live 會一律用 {model}", model = model, target = target));
     }
     match live::probe(&app, contextlens_core::live::Backend::GeminiTranslate, &interpreter, &key, &target).await {
-        Ok(()) => Ok(format!("{model}，口譯 {interpreter}")),
-        Err(e) => Err(format!("即時模型 {model} 可以用，但口譯模型 {interpreter} 無法使用，Live 會改用 {model}。原因：{e}")),
+        Ok(()) => Ok(t!("{model}，口譯 {interpreter}", model = model, interpreter = interpreter)),
+        Err(e) => Err(t!("即時模型 {model} 可以用，但口譯模型 {interpreter} 無法使用，Live 會改用 {model}。原因：{e}", model = model, interpreter = interpreter, e = e)),
     }
 }
 
@@ -1366,7 +1419,7 @@ fn history_list(state: State<AppState>, query: String) -> Vec<HistoryEntry> {
 fn history_star(app: AppHandle, state: State<AppState>, at_ms: u64, starred: bool) -> Result<(), String> {
     let mut h = state.history.lock().unwrap();
     if !h.set_starred(at_ms, starred) {
-        return Err("這筆紀錄已經不在了。".into());
+        return Err(t!("這筆紀錄已經不在了。"));
     }
     store::save_history(&app, &h)?;
     drop(h);
@@ -1391,14 +1444,15 @@ fn history_export(
         entries.retain(|e| e.starred);
     }
     if entries.is_empty() {
-        return Err(if starred_only { "還沒有收藏的紀錄。" } else { "沒有可以匯出的紀錄。" }.into());
+        return Err(if starred_only { t!("還沒有收藏的紀錄。") } else { t!("沒有可以匯出的紀錄。") });
     }
     let (body, ext) = match format.as_str() {
         "anki" => (to_anki(&entries), "txt"),
         _ => (to_csv(&entries, |ms| diag::local_time(ms, tz_offset_min)), "csv"),
     };
     let date = &diag::local_time(now_ms(), tz_offset_min)[..10];
-    let stem = format!("ContextLens {}{} {date}", if starred_only { "收藏" } else { "紀錄" }, if ext == "txt" { " Anki" } else { "" });
+    let what = if starred_only { t!("收藏") } else { t!("紀錄") };
+    let stem = format!("ContextLens {what}{} {date}", if ext == "txt" { " Anki" } else { "" });
     write_download(&app, &stem, ext, &body)
 }
 
@@ -1415,7 +1469,7 @@ fn write_download(app: &AppHandle, stem: &str, ext: &str, body: &str) -> Result<
         }
         path = dir.join(format!("{stem} ({n}).{ext}"));
     }
-    std::fs::write(&path, body).map_err(|e| format!("無法寫入檔案：{e}"))?;
+    std::fs::write(&path, body).map_err(|e| t!("無法寫入檔案：{e}", e = e))?;
     let _ = app.opener().reveal_item_in_dir(&path);
     Ok(path.display().to_string())
 }
@@ -1424,7 +1478,7 @@ fn write_download(app: &AppHandle, stem: &str, ext: &str, body: &str) -> Result<
 #[tauri::command]
 fn save_captions(app: AppHandle, stem: String, ext: String, content: String) -> Result<String, String> {
     if !matches!(ext.as_str(), "txt" | "srt") {
-        return Err("不支援這種檔案格式。".into());
+        return Err(t!("不支援這種檔案格式。"));
     }
     write_download(&app, &stem, &ext, &content)
 }
@@ -1509,6 +1563,7 @@ pub fn run() {
             live_star,
             diagnostics,
             reveal_log,
+            ui_locale,
             history_star,
             history_export,
             save_captions,
@@ -1518,7 +1573,15 @@ pub fn run() {
             if let Ok(dir) = handle.path().app_log_dir() {
                 diag::init(dir);
             }
-            let settings = store::load(&handle);
+            let first_start = store::is_first_start(&handle);
+            let mut settings = store::load(&handle);
+            let locale = interface_locale(&settings);
+            i18n::set_locale(locale);
+            // A new user translates into the language their system speaks.
+            if first_start {
+                settings.target_language = locale.language_name().into();
+            }
+            diag::log(&format!("language: {} (system {:?})", locale.tag(), sys_locale::get_locale()));
             app.manage(AppState {
                 settings: Mutex::new(settings.clone()),
                 pending: Mutex::new(None),
@@ -1554,16 +1617,8 @@ pub fn run() {
                 open_settings(&handle);
             }
 
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &MenuItem::with_id(app, "translator", "開啟翻譯視窗", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "live", "Live 即時翻譯", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "settings", "開啟 ContextLens", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "quit", "結束 ContextLens", true, None::<&str>)?,
-                ],
-            )?;
-            TrayIconBuilder::new()
+            let menu = tray_menu(app.handle())?;
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().expect("window icon"))
                 .tooltip("ContextLens")
                 .menu(&menu)

@@ -2,7 +2,7 @@
 //! so the overlay can offer region, window and full-screen modes like the Windows snipping tool.
 
 use crate::imaging;
-use contextlens_core::Media;
+use contextlens_core::{t, Media};
 use image::{DynamicImage, RgbaImage};
 use serde::{Deserialize, Serialize};
 use xcap::{Monitor, Window};
@@ -71,7 +71,7 @@ pub struct Rect {
 pub fn take(tutor: bool, task: contextlens_core::Task, purpose: Purpose) -> Result<Snip, String> {
     #[cfg(target_os = "macos")]
     crate::capture::mac::ensure_screen_capture()?;
-    let err = |e: xcap::XCapError| format!("無法擷取螢幕：{e}");
+    let err = |e: xcap::XCapError| t!("無法擷取螢幕：{e}", e = e);
     let windows = all_windows();
     let mut shots = Vec::new();
     let mut last_error = None;
@@ -89,7 +89,7 @@ pub fn take(tutor: bool, task: contextlens_core::Task, purpose: Purpose) -> Resu
         }
     }
     if shots.is_empty() {
-        return Err(last_error.unwrap_or_else(|| "找不到螢幕".into()));
+        return Err(last_error.unwrap_or_else(|| t!("找不到螢幕")));
     }
     Ok(Snip { purpose, task, tutor, custom: None, shots })
 }
@@ -126,7 +126,7 @@ fn clip_to(windows: &[(i32, i32, i32, i32, String)], mx: i32, my: i32, mw: i32, 
 }
 
 pub fn view(s: &Snip, index: usize) -> Result<SnipView, String> {
-    let shot = s.shots.get(index).ok_or("沒有這個螢幕")?;
+    let shot = s.shots.get(index).ok_or_else(|| t!("沒有這個螢幕"))?;
     let preview = imaging::jpeg_b64(&DynamicImage::ImageRgba8(shot.image.clone()), 82)?;
     Ok(SnipView {
         preview: format!("data:image/jpeg;base64,{preview}"),
@@ -147,9 +147,9 @@ pub fn clamp(r: Rect, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
 }
 
 pub fn crop(shot: &Shot, r: Rect) -> Result<Media, String> {
-    let (x, y, w, h) = clamp(r, shot.image.width(), shot.image.height()).ok_or("選取範圍太小")?;
+    let (x, y, w, h) = clamp(r, shot.image.width(), shot.image.height()).ok_or_else(|| t!("選取範圍太小"))?;
     let part = image::imageops::crop_imm(&shot.image, x, y, w, h).to_image();
-    imaging::png_media(&part, "螢幕擷取.png")
+    imaging::png_media(&part, &format!("{}.png", t!("螢幕擷取")))
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { N_ } from "./i18n";
 
 export type Provider = "gemini" | "openai" | "anthropic";
 export type Source = "selection" | "screen" | "clipboard_image" | "live";
@@ -9,9 +10,9 @@ export interface CustomAction { name: string; instruction: string }
 
 /** The built-in tasks; a hotkey's custom action adds its own tab. */
 export const TASKS: { id: Task; label: string; hint: string }[] = [
-  { id: "translate", label: "翻譯", hint: "辨識文字並翻譯" },
-  { id: "explain", label: "解釋", hint: "說明內容：圖表、示意圖、迷因、程式碼、題目" },
-  { id: "search", label: "搜尋", hint: "辨識這是什麼並上網查資料" },
+  { id: "translate", label: N_("翻譯"), hint: N_("辨識文字並翻譯") },
+  { id: "explain", label: N_("解釋"), hint: N_("說明內容：圖表、示意圖、迷因、程式碼、題目") },
+  { id: "search", label: N_("搜尋"), hint: N_("辨識這是什麼並上網查資料") },
 ];
 export type LiveSource = "mic" | "system" | "screen";
 
@@ -52,6 +53,7 @@ export interface Settings {
   live_hotkey_added: boolean;
   own_language_upgraded: boolean;
   glossary: GlossaryEntry[];
+  ui_language: string;
 }
 
 export interface Media {
@@ -113,9 +115,9 @@ export type StreamEvent =
   | { kind: "error"; message: string };
 
 export const PROVIDERS: { id: Provider; name: string; vendor: string; media: string }[] = [
-  { id: "gemini", name: "Gemini", vendor: "Google", media: "文字、圖片、音訊、影片" },
-  { id: "openai", name: "ChatGPT", vendor: "OpenAI", media: "文字、圖片" },
-  { id: "anthropic", name: "Claude", vendor: "Anthropic", media: "文字、圖片" },
+  { id: "gemini", name: "Gemini", vendor: "Google", media: N_("文字、圖片、音訊、影片") },
+  { id: "openai", name: "ChatGPT", vendor: "OpenAI", media: N_("文字、圖片") },
+  { id: "anthropic", name: "Claude", vendor: "Anthropic", media: N_("文字、圖片") },
 ];
 
 export interface PlatformInfo { os: string; wayland: boolean; exe: string }

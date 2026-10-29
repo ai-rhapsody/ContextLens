@@ -4,6 +4,7 @@
 pub mod caps;
 pub mod conversation;
 pub mod history;
+pub mod i18n;
 pub mod live;
 pub mod media;
 pub mod prompt;

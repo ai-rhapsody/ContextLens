@@ -22,11 +22,12 @@ impl MediaKind {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// What to call it in a message, in the interface language.
+    pub fn label(self) -> String {
         match self {
-            Self::Image => "圖片",
-            Self::Audio => "音訊",
-            Self::Video => "影片",
+            Self::Image => crate::t!("圖片"),
+            Self::Audio => crate::t!("音訊"),
+            Self::Video => crate::t!("影片"),
         }
     }
 
@@ -100,13 +101,13 @@ pub fn image_byte_limit(provider: Provider) -> usize {
 pub fn check(provider: Provider, model: &str, media: &Media) -> Result<(), String> {
     let kind = media
         .kind()
-        .ok_or_else(|| format!("不支援這種檔案（{}）。", media.mime))?;
+        .ok_or_else(|| crate::t!("不支援這種檔案（{mime}）。", mime = media.mime))?;
     let unsupported = || {
-        format!(
-            "{}（{}）不支援{}。改用支援的服務，例如 Gemini。",
-            provider.display_name(),
-            model,
-            kind.label()
+        crate::t!(
+            "{provider}（{model}）不支援{kind}。改用支援的服務，例如 Gemini。",
+            provider = provider.display_name(),
+            model = model,
+            kind = kind.label()
         )
     };
     if !caps::for_model(provider, model).supports(kind) {
@@ -114,19 +115,19 @@ pub fn check(provider: Provider, model: &str, media: &Media) -> Result<(), Strin
     }
     let (mimes, max) = accepts(provider, kind).ok_or_else(unsupported)?;
     if !mimes.contains(&media.mime.as_str()) {
-        return Err(format!(
-            "{} 不支援這種{}格式（{}）。",
-            provider.display_name(),
-            kind.label(),
-            media.mime
+        return Err(crate::t!(
+            "{provider} 不支援這種{kind}格式（{mime}）。",
+            provider = provider.display_name(),
+            kind = kind.label(),
+            mime = media.mime
         ));
     }
     if media.byte_len() > max {
-        return Err(format!(
-            "檔案太大：{:.1} MB，{} 的上限是 {} MB。",
-            media.byte_len() as f64 / MB as f64,
-            provider.display_name(),
-            max / MB
+        return Err(crate::t!(
+            "檔案太大：{size} MB，{provider} 的上限是 {max} MB。",
+            size = format!("{:.1}", media.byte_len() as f64 / MB as f64),
+            provider = provider.display_name(),
+            max = max / MB
         ));
     }
     Ok(())

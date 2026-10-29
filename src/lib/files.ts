@@ -1,4 +1,5 @@
 import type { Media } from "./api";
+import { N_, t } from "./i18n";
 
 /** Hard cap before anything crosses the IPC bridge; providers have their own, lower limits. */
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -24,17 +25,17 @@ export function kindOf(mime: string): "image" | "audio" | "video" | null {
   return k === "image" || k === "audio" || k === "video" ? k : null;
 }
 
-export const KIND_LABEL = { image: "圖片", audio: "音訊", video: "影片", live: "Live" } as const;
+export const KIND_LABEL = { image: N_("圖片"), audio: N_("音訊"), video: N_("影片"), live: "Live" } as const;
 
 export function fileToMedia(file: File): Promise<Media> {
   const mime = mimeFor(file.name, file.type);
-  if (!kindOf(mime)) return Promise.reject(new Error(`不支援這種檔案：${file.name}`));
+  if (!kindOf(mime)) return Promise.reject(new Error(t("不支援這種檔案：{name}", { name: file.name })));
   if (file.size > MAX_FILE_BYTES) {
-    return Promise.reject(new Error(`檔案太大（${(file.size / 1048576).toFixed(1)} MB），上限 20 MB。`));
+    return Promise.reject(new Error(t("檔案太大（{size} MB），上限 20 MB。", { size: (file.size / 1048576).toFixed(1) })));
   }
   return new Promise((resolve, reject) => {
     const r = new FileReader();
-    r.onerror = () => reject(r.error ?? new Error("無法讀取檔案"));
+    r.onerror = () => reject(r.error ?? new Error(t("無法讀取檔案")));
     r.onload = () => {
       const url = String(r.result);
       resolve({ mime, data_b64: url.slice(url.indexOf(",") + 1), name: file.name });

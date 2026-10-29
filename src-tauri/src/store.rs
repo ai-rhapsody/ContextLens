@@ -30,6 +30,11 @@ pub fn save_history(app: &AppHandle, history: &History) -> Result<(), String> {
     fs::rename(tmp, path).map_err(|e| e.to_string())
 }
 
+/// No settings saved yet: a first start.
+pub fn is_first_start(app: &AppHandle) -> bool {
+    path(app).is_ok_and(|p| !p.exists())
+}
+
 /// Missing or unreadable settings fall back to defaults so the app always starts.
 /// Model names still at an old default move to the current one.
 pub fn load(app: &AppHandle) -> Settings {

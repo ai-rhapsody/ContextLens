@@ -217,6 +217,8 @@ pub struct Settings {
     pub live_hotkey_added: bool,
     /// Fixed renderings, given to the models with every request that may contain them.
     pub glossary: Vec<GlossaryEntry>,
+    /// The interface language as a tag (`en`, `ja`…); empty follows the system.
+    pub ui_language: String,
     /// `own_language_to_english` was moved to its new default once. Versions before 0.1.11
     /// saved the old default (off) without the user choosing it.
     pub own_language_upgraded: bool,
@@ -259,6 +261,7 @@ impl Default for Settings {
             live_hotkey_added: false,
             own_language_upgraded: false,
             glossary: vec![],
+            ui_language: String::new(),
         }
     }
 }
@@ -347,21 +350,21 @@ impl Settings {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.target_language.trim().is_empty() {
-            return Err("目標語言不能是空的".into());
+            return Err(crate::t!("目標語言不能是空的"));
         }
         for p in Provider::ALL {
             if self.model_for(p).trim().is_empty() {
-                return Err(format!("{} 的模型名稱不能是空的", p.display_name()));
+                return Err(crate::t!("{provider} 的模型名稱不能是空的", provider = p.display_name()));
             }
         }
         let mut seen = HashSet::new();
         for h in &self.hotkeys {
             let key = h.accelerator.trim().to_lowercase();
             if key.is_empty() {
-                return Err("熱鍵不能是空的".into());
+                return Err(crate::t!("熱鍵不能是空的"));
             }
             if !seen.insert(key) {
-                return Err(format!("熱鍵 {} 重複了", h.accelerator));
+                return Err(crate::t!("熱鍵 {key} 重複了", key = h.accelerator));
             }
         }
         Ok(())

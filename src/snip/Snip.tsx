@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cancelSnip, finishSnip, snipView, type Rect, type SnipView, type WinRect } from "../lib/api";
+import { t, variants } from "../lib/i18n";
 
 type Mode = "region" | "window" | "screen";
 
@@ -25,7 +26,7 @@ export function Snip() {
     // The capture is stored before overlays open; retry briefly anyway in case one loads early.
     let alive = true;
     const load = (tries: number) => snipView().then((v) => alive && setView(v)).catch((e) => {
-      if (alive && tries > 0 && String(e).includes("沒有進行中")) setTimeout(() => load(tries - 1), 100);
+      if (alive && tries > 0 && variants("沒有進行中的擷取").some((k) => String(e).includes(k))) setTimeout(() => load(tries - 1), 100);
       else if (alive) setError(String(e));
     });
     load(10);
@@ -58,10 +59,10 @@ export function Snip() {
 
   const onDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest(".snip-bar")) return;
-    if (mode === "screen" && view) return submit({ x: 0, y: 0, w: view.width, h: view.height }, "全螢幕");
+    if (mode === "screen" && view) return submit({ x: 0, y: 0, w: view.width, h: view.height }, t("全螢幕"));
     if (mode === "window") {
       const w = windowAt(e.clientX, e.clientY);
-      if (w) submit({ x: w.x, y: w.y, w: w.w, h: w.h }, w.title ? `視窗：${w.title}` : "視窗");
+      if (w) submit({ x: w.x, y: w.y, w: w.w, h: w.h }, w.title ? t("視窗：{title}", { title: w.title }) : t("視窗"));
       return;
     }
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -92,7 +93,7 @@ export function Snip() {
   if (error) {
     return (
       <div className="snip snip-error" onClick={() => cancelSnip()}>
-        <p>無法擷取：{error}</p><p className="faint">按一下或 Esc 關閉</p>
+        <p>{t("無法擷取：{error}", { error })}</p><p className="faint">{t("按一下或 Esc 關閉")}</p>
       </div>
     );
   }
@@ -123,18 +124,18 @@ export function Snip() {
         </>
       )}
 
-      <div className="snip-bar" role="toolbar" aria-label="擷取模式">
-        {([["region", "區域"], ["window", "視窗"], ["screen", "全螢幕"]] as const).map(([m, label], i) => (
+      <div className="snip-bar" role="toolbar" aria-label={t("擷取模式")}>
+        {([["region", t("區域")], ["window", t("視窗")], ["screen", t("全螢幕")]] as const).map(([m, label], i) => (
           <button key={m} aria-pressed={mode === m} onClick={() => pickMode(m)}>
             {label}<kbd>{i + 1}</kbd>
           </button>
         ))}
         <span className="sep" />
         <span className="hint">
-          {view.purpose === "live_target" && <strong>選擇要讓 Live 看的範圍 · </strong>}
-          {mode === "region" ? "拖曳框選" : mode === "window" ? "點選一個視窗" : "按一下選取這個螢幕"}
+          {view.purpose === "live_target" && <strong>{t("選擇要讓 Live 看的範圍")} · </strong>}
+          {mode === "region" ? t("拖曳框選") : mode === "window" ? t("點選一個視窗") : t("按一下選取這個螢幕")}
         </span>
-        <button onClick={() => cancelSnip()}>取消<kbd>Esc</kbd></button>
+        <button onClick={() => cancelSnip()}>{t("取消")}<kbd>Esc</kbd></button>
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import { fileToMedia, KIND_LABEL, kindOf } from "../lib/files";
 import { parseSections } from "../lib/sections";
 import { Thinking } from "../lib/Thinking";
 import { Answer, FollowBar, LEAD, QUERIES, SelectionMenu, Sources, Thread, useStickToBottom, useThread } from "../lib/convo";
+import { isKey, t, variants } from "../lib/i18n";
 
 type Status = "idle" | "streaming" | "done" | "error";
 type Input = { text: string; media: Media | null };
@@ -57,7 +58,7 @@ export function Popup() {
     run.current++;
     setStatus("error");
     setError(message);
-    setNeedsKey(message.includes("API 金鑰"));
+    setNeedsKey(variants("API 金鑰").some((k) => message.includes(k)));
   }, []);
 
   const start = useCallback((next: Input, asTask: Task, asTutor: boolean, via: Provider | null = null) => {
@@ -206,11 +207,11 @@ export function Popup() {
 
   const sections = useMemo(() => parseSections(result), [result]);
   const hasHeadings = sections.some((s) => s.title);
-  const lead = sections.find((s) => s.title === LEAD[task])?.body;
+  const lead = sections.find((s) => isKey(s.title, LEAD[task]))?.body;
 
   const copy = async () => {
     const text = task === "search"
-      ? sections.filter((s) => s.title !== QUERIES).map((s) => (s.title ? `${s.title}\n${s.body}` : s.body)).join("\n\n")
+      ? sections.filter((s) => !isKey(s.title, QUERIES)).map((s) => (s.title ? `${s.title}\n${s.body}` : s.body)).join("\n\n")
       : lead ?? result;
     await navigator.clipboard.writeText(text).catch(() => {});
     setCopied(true);
@@ -238,31 +239,31 @@ export function Popup() {
       onDrop={(e) => { e.preventDefault(); setDragging(false); useFiles(e.dataTransfer.files); }}
     >
       <div className="pop-head" data-tauri-drag-region>
-        <div className="tasks" role="tablist" aria-label="動作">
-          {TASKS.map((t) => (
-            <button key={t.id} role="tab" aria-selected={task === t.id} title={t.hint} onClick={() => switchTask(t.id)}>
-              {t.label}
+        <div className="tasks" role="tablist" aria-label={t("動作")}>
+          {TASKS.map((x) => (
+            <button key={x.id} role="tab" aria-selected={task === x.id} title={t(x.hint)} onClick={() => switchTask(x.id)}>
+              {t(x.label)}
             </button>
           ))}
           {custom && (
             <button role="tab" aria-selected={task === "custom"} title={custom.instruction} onClick={() => switchTask("custom")}>
-              {custom.name || "自訂"}
+              {custom.name || t("自訂")}
             </button>
           )}
         </div>
         <span className="grow" data-tauri-drag-region />
         {task === "translate" && (
           <span className="mode">
-            教學
-            <button className="switch" role="switch" aria-checked={tutor} aria-label="教學模式" onClick={toggleTutor} />
+            {t("教學")}
+            <button className="switch" role="switch" aria-checked={tutor} aria-label={t("教學模式")} onClick={toggleTutor} />
           </span>
         )}
         <button
           className={`btn quiet pin${pinned ? " on" : ""}`} onClick={togglePin} aria-pressed={pinned}
-          aria-label="固定視窗位置"
+          aria-label={t("固定視窗位置")}
           title={pinned
-            ? "已固定：視窗留在這裡，新的結果在原處更新。按一下取消固定"
-            : "未固定：視窗會出現在游標旁。按一下固定在目前位置"}
+            ? t("已固定：視窗留在這裡，新的結果在原處更新。按一下取消固定")
+            : t("未固定：視窗會出現在游標旁。按一下固定在目前位置")}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
             <path
@@ -271,43 +272,43 @@ export function Popup() {
             />
           </svg>
         </button>
-        <button className="btn quiet" onClick={() => hidePopup()} aria-label="關閉" title="關閉（Esc）">✕</button>
+        <button className="btn quiet" onClick={() => hidePopup()} aria-label={t("關閉")} title={t("關閉（Esc）")}>✕</button>
       </div>
 
       <div className="pop-body" ref={bodyRef}>
         {input?.text && !media && (
-          <p className={`src${expanded ? " open" : ""}`} onClick={() => setExpanded((v) => !v)} title="點一下展開原文">
+          <p className={`src${expanded ? " open" : ""}`} onClick={() => setExpanded((v) => !v)} title={t("點一下展開原文")}>
             {input.text}
           </p>
         )}
 
         {media && (
           <div className="src-media">
-            {kind === "image" && <img src={dataUrl(media)} alt={media.name ?? "擷取的圖片"} />}
+            {kind === "image" && <img src={dataUrl(media)} alt={media.name ?? t("擷取的圖片")} />}
             {kind === "audio" && <audio controls src={dataUrl(media)} />}
             {kind === "video" && <video controls src={dataUrl(media)} />}
-            <span className="faint">{media.name ?? (kind ? KIND_LABEL[kind] : "檔案")}</span>
+            <span className="faint">{media.name ?? (kind ? t(KIND_LABEL[kind]) : t("檔案"))}</span>
           </div>
         )}
 
         {blocked && (
           <div className="notice soft" role="alert">
-            <strong>{blocked.model}</strong> 不能讀取{KIND_LABEL[blocked.kind]}。
+            <strong>{blocked.model}</strong> {t("不能讀取{kind}。", { kind: t(KIND_LABEL[blocked.kind]) })}
             {blocked.alternatives.length > 0 ? (
               <div className="alts">
                 {blocked.alternatives.map((p) => {
                   const name = PROVIDERS.find((x) => x.id === p.provider)?.name;
                   return (
                     <button key={p.provider} className="btn" onClick={() => input && start(input, task, tutor, p.provider)}>
-                      改用 {name} 處理這次
+                      {t("改用 {name} 處理這次", { name: name ?? "" })}
                     </button>
                   );
                 })}
               </div>
             ) : (
               <div className="alts">
-                <span>到設定換一個支援{KIND_LABEL[blocked.kind]}的模型，例如 Gemini。</span>
-                <button className="btn" onClick={() => { showSettings(); hidePopup(); }}>開啟設定</button>
+                <span>{t("到設定換一個支援{kind}的模型，例如 Gemini。", { kind: t(KIND_LABEL[blocked.kind]) })}</span>
+                <button className="btn" onClick={() => { showSettings(); hidePopup(); }}>{t("開啟設定")}</button>
               </div>
             )}
           </div>
@@ -319,9 +320,9 @@ export function Popup() {
             {(needsKey || input) && (
               <div className="alts">
                 {input && !needsKey && (
-                  <button className="btn" onClick={() => start(input, task, tutor, override)}>重試</button>
+                  <button className="btn" onClick={() => start(input, task, tutor, override)}>{t("重試")}</button>
                 )}
-                {needsKey && <button className="btn" onClick={() => { showSettings(); hidePopup(); }}>開啟設定</button>}
+                {needsKey && <button className="btn" onClick={() => { showSettings(); hidePopup(); }}>{t("開啟設定")}</button>}
               </div>
             )}
           </div>
@@ -329,9 +330,9 @@ export function Popup() {
 
         {status === "idle" && (
           <div className="dropzone">
-            <p>反白文字或截圖後按熱鍵，或把圖片、音訊、影片拖到這裡。</p>
-            <p className="faint">也可以按 Ctrl+V 貼上圖片。</p>
-            <button className="btn" onClick={() => fileInput.current?.click()}>選擇檔案</button>
+            <p>{t("反白文字或截圖後按熱鍵，或把圖片、音訊、影片拖到這裡。")}</p>
+            <p className="faint">{t("也可以按 Ctrl+V 貼上圖片。")}</p>
+            <button className="btn" onClick={() => fileInput.current?.click()}>{t("選擇檔案")}</button>
           </div>
         )}
 
@@ -342,14 +343,14 @@ export function Popup() {
         )}
 
         {(offline || fallback) && status !== "error" && (result || streaming) && (
-          <p className="offline faint">{fallback ?? "這個模型無法上網，以下是模型本身的知識，可能不是最新資訊。"}</p>
+          <p className="offline faint">{fallback ?? t("這個模型無法上網，以下是模型本身的知識，可能不是最新資訊。")}</p>
         )}
 
         {status !== "error" && hasHeadings && <Answer text={result} task={task} streaming={streaming} />}
 
         <Sources list={sources} />
         {noSources && (
-          <p className="offline faint">服務這次沒有回傳網頁來源，內容請用上面的搜尋關鍵字自行查證。</p>
+          <p className="offline faint">{t("服務這次沒有回傳網頁來源，內容請用上面的搜尋關鍵字自行查證。")}</p>
         )}
 
         {status === "done" && convo !== null && (
@@ -362,16 +363,16 @@ export function Popup() {
 
       <div className="pop-foot">
         <span className="grow foot-status">
-          {streaming && result ? <span>{task === "search" ? "搜尋中…" : "處理中…"} · </span> : null}
+          {streaming && result ? <span>{task === "search" ? t("搜尋中…") : t("處理中…")} · </span> : null}
           <span className="faint">
-            {provider ? `${provider.name} · ${modelForTask(settings!, provider.id, task)}${override ? "（這次）" : ""}` : ""}
+            {provider ? `${provider.name} · ${modelForTask(settings!, provider.id, task)}${override ? t("（這次）") : ""}` : ""}
           </span>
-          {!pinned && kept && status !== "idle" && <span className="faint"> · Esc 關閉</span>}
+          {!pinned && kept && status !== "idle" && <span className="faint"> · {t("Esc 關閉")}</span>}
         </span>
-        <button className="btn quiet" onClick={() => fileInput.current?.click()} title="分析圖片、音訊或影片">檔案…</button>
+        <button className="btn quiet" onClick={() => fileInput.current?.click()} title={t("分析圖片、音訊或影片")}>{t("檔案…")}</button>
         {convo !== null && status === "done" && settings?.save_history && (
           <button
-            className="btn quiet" aria-pressed={starred} title={starred ? "已收藏，可在歷史紀錄匯出" : "收藏到歷史紀錄，之後可以匯出成單字卡"}
+            className="btn quiet" aria-pressed={starred} title={starred ? t("已收藏，可在歷史紀錄匯出") : t("收藏到歷史紀錄，之後可以匯出成單字卡")}
             onClick={() => {
               const next = !starred;
               setStarred(next);
@@ -382,12 +383,12 @@ export function Popup() {
         )}
         {convo !== null && status === "done" && (
           <button
-            className="btn quiet" title="在對話視窗繼續討論"
+            className="btn quiet" title={t("在對話視窗繼續討論")}
             onClick={() => { openChat(convo); hidePopup(); }}
-          >展開</button>
+          >{t("展開")}</button>
         )}
         <button className="btn" onClick={copy} disabled={!result}>
-          {copied ? "已複製" : task === "translate" ? "複製譯文" : "複製"}
+          {copied ? t("已複製") : task === "translate" ? t("複製譯文") : t("複製")}
         </button>
         <span
           className="grip" aria-hidden
@@ -402,7 +403,11 @@ export function Popup() {
       {status === "done" && convo !== null && (
         <SelectionMenu root={bodyRef} busy={thread.busy} onAsk={(a) => { setKept(true); thread.ask(a); }} />
       )}
-      {dragging && <div className="drop-veil">放開以{task === "custom" ? custom?.name || "自訂動作" : TASKS.find((t) => t.id === task)?.label}</div>}
+      {dragging && (
+        <div className="drop-veil">
+          {t("放開以{action}", { action: task === "custom" ? custom?.name || t("自訂動作") : t(TASKS.find((x) => x.id === task)?.label ?? "") })}
+        </div>
+      )}
     </div>
   );
 }

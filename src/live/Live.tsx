@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { inline } from "../lib/Rich";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { toSrt, toText, type Caption } from "../lib/captions";
+import { isNote, toSrt, toText, type Caption } from "../lib/captions";
 import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liveStar, liveStart, liveStop, PROVIDERS, showSettings,
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
+import { locale, N_, t } from "../lib/i18n";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
 /** A caption line, or (with `divider`) the start of a later session. */
@@ -23,11 +24,9 @@ function savedScale(): number {
 }
 
 const STATE_LABEL: Record<State, string> = {
-  idle: "未開始", connecting: "連線中…", listening: "聆聽中", reconnecting: "重新連線中…",
-  paused: "已暫停", stopped: "已停止", error: "發生錯誤",
+  idle: N_("未開始"), connecting: N_("連線中…"), listening: N_("聆聽中"), reconnecting: N_("重新連線中…"),
+  paused: N_("已暫停"), stopped: N_("已停止"), error: N_("發生錯誤"),
 };
-
-const NOTE = "註：";
 
 function clock(s: number) {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -38,7 +37,7 @@ function Output({ text }: { text: string }) {
   return (
     <>
       {text.split("\n").filter((l) => l.trim()).map((line, i) =>
-        line.trim().startsWith(NOTE)
+        isNote(line.trim())
           ? <p className="lv-note" key={i}>{inline(line.trim())}</p>
           : <p className="lv-out" key={i}>{inline(line)}</p>,
       )}
@@ -88,7 +87,7 @@ export function Live() {
         lastState.current = e.state;
         if (e.state === "connecting") settle();
         if (e.state === "connecting" && ["idle", "stopped", "paused", "error"].includes(was)) {
-          const at = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
+          const at = new Date().toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
           setTurns((t) => (t.length && !t[t.length - 1].divider ? [...t, { input: "", output: "", divider: at }] : t));
         }
         setState(e.state);
@@ -134,7 +133,7 @@ export function Live() {
   const canAudio = usable.some((o) => o.audio);
   const canScreen = usable.some((o) => o.screen);
   const noKeys = info !== null && info.options.length === 0;
-  const audioWhy = canAudio ? "" : "聽聲音需要 Gemini 或 ChatGPT 的即時模型。到設定的「模型與金鑰」填寫。";
+  const audioWhy = canAudio ? "" : t("聽聲音需要 Gemini 或 ChatGPT 的即時模型。到設定的「模型與金鑰」填寫。");
   const name = (p: Provider) => PROVIDERS.find((x) => x.id === p)?.name ?? p;
 
   const chooseProvider = async (value: string) => {
@@ -217,13 +216,13 @@ export function Live() {
   const exportAs = async (ext: "txt" | "srt") => {
     const all: Caption[] = current.input || current.output ? [...turns, { ...current, end: Date.now() }] : turns;
     const content = ext === "srt" ? toSrt(all) : toText(all);
-    if (!content.trim()) return setMessage("還沒有可以匯出的字幕。");
+    if (!content.trim()) return setMessage(t("還沒有可以匯出的字幕。"));
     const d = new Date();
     const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
       + ` ${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
     try {
       const path = await invoke<string>("save_captions", { stem: `ContextLens Live ${stamp}`, ext, content });
-      setMessage(`已匯出到 ${path}`);
+      setMessage(t("已匯出到 {path}", { path }));
     } catch (e) {
       setMessage(String(e));
     }
@@ -233,47 +232,47 @@ export function Live() {
     <div className="live" style={{ "--lv-scale": scale } as React.CSSProperties}>
       <div className="lv-head" data-tauri-drag-region>
         <span className={`lv-dot s-${state}`} aria-hidden />
-        <span className="lv-state" data-tauri-drag-region>{STATE_LABEL[state]}</span>
-        {startedAt && <span className="lv-clock num" title="已開啟時間，Live 會持續計費">{clock(elapsed)}</span>}
+        <span className="lv-state" data-tauri-drag-region>{t(STATE_LABEL[state])}</span>
+        {startedAt && <span className="lv-clock num" title={t("已開啟時間，Live 會持續計費")}>{clock(elapsed)}</span>}
         {running && info?.label && (
-          <span className="lv-model" title={`正在使用 ${info.label}`} data-tauri-drag-region>{info.label.replace(/^\S+ · /, "")}</span>
+          <span className="lv-model" title={t("正在使用 {label}", { label: info.label })} data-tauri-drag-region>{info.label.replace(/^\S+ · /, "")}</span>
         )}
-        <span className="lv-meter" aria-label="音量"><i style={{ width: `${Math.round(level * 100)}%` }} /></span>
+        <span className="lv-meter" aria-label={t("音量")}><i style={{ width: `${Math.round(level * 100)}%` }} /></span>
         <span className="grow" data-tauri-drag-region />
-        <div className="lv-sources" role="group" aria-label="聲音來源">
+        <div className="lv-sources" role="group" aria-label={t("聲音來源")}>
           <button
             aria-pressed={sources.includes("mic") && canAudio} onClick={() => toggleSource("mic")}
-            disabled={!canAudio} title={audioWhy || "聽麥克風"}
-          >麥克風</button>
+            disabled={!canAudio} title={audioWhy || t("聽麥克風")}
+          >{t("麥克風")}</button>
           <button
             aria-pressed={sources.includes("system") && canAudio} onClick={() => toggleSource("system")}
             disabled={!info?.system_audio || !canAudio}
-            title={!info?.system_audio ? "系統聲音目前只支援 Windows" : audioWhy || "錄製電腦正在播放的聲音"}
-          >系統聲音</button>
+            title={!info?.system_audio ? t("系統聲音目前只支援 Windows") : audioWhy || t("錄製電腦正在播放的聲音")}
+          >{t("系統聲音")}</button>
           <button
             aria-pressed={sources.includes("screen")} onClick={toggleScreen} disabled={!canScreen}
-            title={!canScreen ? "看螢幕需要一個能讀圖片的模型和金鑰"
-              : sources.includes("screen") ? `正在看：${info?.screen ?? ""}` : "選擇要讓 Live 看的區域、視窗或螢幕"}
-          >螢幕</button>
+            title={!canScreen ? t("看螢幕需要一個能讀圖片的模型和金鑰")
+              : sources.includes("screen") ? t("正在看：{target}", { target: info?.screen ?? "" }) : t("選擇要讓 Live 看的區域、視窗或螢幕")}
+          >{t("螢幕")}</button>
         </div>
         <label className="lv-tutor">
-          註解
-          <button className="switch" role="switch" aria-checked={tutor} aria-label="教學註解" onClick={toggleTutor} />
+          {t("註解")}
+          <button className="switch" role="switch" aria-checked={tutor} aria-label={t("教學註解")} onClick={toggleTutor} />
         </label>
         {running
-          ? <button className="btn" onClick={stop}>停止</button>
+          ? <button className="btn" onClick={stop}>{t("停止")}</button>
           : (
             <button
               className="btn primary" onClick={() => start(effective)}
               disabled={!effective.length}
-              title={!effective.length ? "先開一個來源" : undefined}
-            >開始</button>
+              title={!effective.length ? t("先開一個來源") : undefined}
+            >{t("開始")}</button>
           )}
         <button
           className="btn quiet" onClick={() => { setTurns([]); cur.current = { input: "", output: "" }; setCurrent(cur.current); }}
-          disabled={!turns.length && !current.input && !current.output} title="清除字幕（已存進歷史紀錄的不受影響）"
-        >清除</button>
-        <button className="btn quiet" onClick={() => closeLive()} aria-label="關閉並停止" title="關閉並停止（Esc）">✕</button>
+          disabled={!turns.length && !current.input && !current.output} title={t("清除字幕（已存進歷史紀錄的不受影響）")}
+        >{t("清除")}</button>
+        <button className="btn quiet" onClick={() => closeLive()} aria-label={t("關閉並停止")} title={t("關閉並停止（Esc）")}>✕</button>
       </div>
 
       <div
@@ -285,31 +284,31 @@ export function Live() {
       >
         {info && !noKeys && (
           <div className="lv-sub">
-            <span className="faint">服務</span>
+            <span className="faint">{t("服務")}</span>
             <select
-              className="field" value={info.chosen ?? ""} aria-label="Live 使用的服務"
+              className="field" value={info.chosen ?? ""} aria-label={t("Live 使用的服務")}
               onChange={(e) => chooseProvider(e.target.value)}
             >
-              <option value="">自動</option>
+              <option value="">{t("自動")}</option>
               {info.options.map((o) => (
                 <option key={o.provider} value={o.provider}>
-                  {name(o.provider)}{o.audio ? "" : "（只能看螢幕）"}
+                  {name(o.provider)}{o.audio ? "" : t("（只能看螢幕）")}
                 </option>
               ))}
             </select>
-            {info.label && running && <span className="faint lv-label num">正在使用 {info.label}</span>}
+            {info.label && running && <span className="faint lv-label num">{t("正在使用 {label}", { label: info.label })}</span>}
             <span className="grow" />
-            <span className="lv-size" role="group" aria-label="字幕大小">
-              <button className="btn quiet" onClick={() => resize(-1)} disabled={scale === SCALES[0]} title="字幕小一點">A−</button>
-              <button className="btn quiet" onClick={() => resize(1)} disabled={scale === SCALES[SCALES.length - 1]} title="字幕大一點">A+</button>
+            <span className="lv-size" role="group" aria-label={t("字幕大小")}>
+              <button className="btn quiet" onClick={() => resize(-1)} disabled={scale === SCALES[0]} title={t("字幕小一點")}>A−</button>
+              <button className="btn quiet" onClick={() => resize(1)} disabled={scale === SCALES[SCALES.length - 1]} title={t("字幕大一點")}>A+</button>
             </span>
             <select
-              className="field" value="" aria-label="匯出字幕" disabled={empty}
+              className="field" value="" aria-label={t("匯出字幕")} disabled={empty}
               onChange={(e) => { const f = e.target.value as "txt" | "srt"; e.target.value = ""; if (f) exportAs(f); }}
             >
-              <option value="" disabled>匯出…</option>
-              <option value="txt">文字檔（TXT）</option>
-              <option value="srt">字幕檔（SRT）</option>
+              <option value="" disabled>{t("匯出…")}</option>
+              <option value="txt">{t("文字檔（TXT）")}</option>
+              <option value="srt">{t("字幕檔（SRT）")}</option>
             </select>
           </div>
         )}
@@ -318,48 +317,48 @@ export function Live() {
           // Stays in view while the captions scroll; closing it only hides it.
           <div className={`lv-msg sticky${state === "error" ? " err" : ""}`} role="status">
             <span className="grow">{message}</span>
-            <button className="btn quiet" onClick={() => setMessage(null)} aria-label="關閉提示">✕</button>
+            <button className="btn quiet" onClick={() => setMessage(null)} aria-label={t("關閉提示")}>✕</button>
           </div>
         )}
 
         {sources.includes("screen") && info?.screen && (
           <div className="lv-screen">
             <span className="faint">
-              {sources.some((s) => s !== "screen") ? "畫面作為上下文" : "翻譯畫面上的新文字"} · 正在看：
+              {sources.some((s) => s !== "screen") ? t("畫面作為上下文") : t("翻譯畫面上的新文字")} · {t("正在看：")}
             </span>
             <span className="lv-target">{info.screen}</span>
-            <button className="btn quiet" onClick={() => livePickScreen()}>重新選擇</button>
+            <button className="btn quiet" onClick={() => livePickScreen()}>{t("重新選擇")}</button>
           </div>
         )}
 
         {noKeys && (
           <div className="lv-msg err">
-            還沒有任何服務的金鑰。
-            <button className="btn" onClick={() => showSettings()}>開啟設定</button>
+            {t("還沒有任何服務的金鑰。")}
+            <button className="btn" onClick={() => showSettings()}>{t("開啟設定")}</button>
           </div>
         )}
 
         {empty && !running && !message && !noKeys && (
           <p className="lv-hint">
             {canAudio
-              ? "選好來源後按「開始」。聽聲音時會持續計費，一段時間沒有聲音或畫面變化會自動暫停。"
-              : "目前只能看螢幕：按「螢幕」選一塊區域，畫面上出現新文字時就會翻譯。要聽聲音，請在「模型與金鑰」設定 Gemini 或 ChatGPT 的即時模型。"}
+              ? t("選好來源後按「開始」。聽聲音時會持續計費，一段時間沒有聲音或畫面變化會自動暫停。")
+              : t("目前只能看螢幕：按「螢幕」選一塊區域，畫面上出現新文字時就會翻譯。要聽聲音，請在「模型與金鑰」設定 Gemini 或 ChatGPT 的即時模型。")}
           </p>
         )}
-        {empty && state === "listening" && <p className="lv-hint">正在聆聽…說話或播放聲音就會開始翻譯。</p>}
+        {empty && state === "listening" && <p className="lv-hint">{t("正在聆聽…說話或播放聲音就會開始翻譯。")}</p>}
 
-        {turns.map((t, i) => t.divider ? (
-          <div className="lv-divider" key={i} role="separator"><span>{t.divider} 開始</span></div>
+        {turns.map((turn, i) => turn.divider ? (
+          <div className="lv-divider" key={i} role="separator"><span>{t("{time} 開始", { time: turn.divider })}</span></div>
         ) : (
-          <div className={`lv-turn${t.starred ? " starred" : ""}`} key={i}>
-            {t.input && <p className="lv-in">{t.input.trim()}</p>}
-            <Output text={t.output} />
+          <div className={`lv-turn${turn.starred ? " starred" : ""}`} key={i}>
+            {turn.input && <p className="lv-in">{turn.input.trim()}</p>}
+            <Output text={turn.output} />
             <div className="lv-acts">
-              <button onClick={() => ask(t)} title="開對話視窗追問這一句，Live 繼續進行">追問</button>
+              <button onClick={() => ask(turn)} title={t("開對話視窗追問這一句，Live 繼續進行")}>{t("追問")}</button>
               <button
-                onClick={() => star(i)} aria-pressed={!!t.starred}
-                title={t.starred ? "已存到歷史紀錄" : "把這一句存到歷史紀錄"}
-              >{t.starred ? "★ 已收藏" : "☆ 收藏"}</button>
+                onClick={() => star(i)} aria-pressed={!!turn.starred}
+                title={turn.starred ? t("已存到歷史紀錄") : t("把這一句存到歷史紀錄")}
+              >{turn.starred ? `★ ${t("已收藏")}` : `☆ ${t("收藏")}`}</button>
             </div>
           </div>
         ))}

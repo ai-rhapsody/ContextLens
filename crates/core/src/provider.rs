@@ -114,7 +114,7 @@ fn stream_error(provider: Provider, error: &Value) -> ProviderError {
     });
     match status {
         Some(status) if status >= 400 => ProviderError::Api { provider: provider.id(), status, message },
-        _ if message.is_empty() => ProviderError::Stream(format!("{} 串流錯誤", provider.display_name())),
+        _ if message.is_empty() => ProviderError::Stream(crate::t!("{provider} 串流錯誤", provider = provider.display_name())),
         _ => ProviderError::Stream(message),
     }
 }
@@ -129,26 +129,29 @@ pub fn describe_api(provider: &str, status: u16, message: &str) -> String {
     };
     let m = message.to_lowercase();
     let what = if m.contains("api key") && (m.contains("invalid") || m.contains("not valid") || m.contains("incorrect")) || status == 401 {
-        format!("{name} 的 API 金鑰無效。到「模型與金鑰」重新貼上，再按「測試」。")
+        crate::t!("{name} 的 API 金鑰無效。到「模型與金鑰」重新貼上，再按「測試」。", name = name)
     } else if status == 429 {
-        format!(
-            "{name} 回報請求太頻繁或額度已用完。免費金鑰的額度很低，等一分鐘再試；\
-             常用的話，到 {name} 的後台確認額度和帳單，或在「模型與金鑰」改用其他服務。"
+        crate::t!(
+            "{name} 回報請求太頻繁或額度已用完。免費金鑰的額度很低，等一分鐘再試；常用的話，到 {name} 的後台確認額度和帳單，或在「模型與金鑰」改用其他服務。",
+            name = name
         )
     } else if status == 403 {
-        format!("這組 {name} 金鑰沒有權限使用這個模型或功能（有些功能需要付費方案）。到「模型與金鑰」換一個模型，或確認帳號的方案。")
+        crate::t!(
+            "這組 {name} 金鑰沒有權限使用這個模型或功能（有些功能需要付費方案）。到「模型與金鑰」換一個模型，或確認帳號的方案。",
+            name = name
+        )
     } else if status == 404 || m.contains("not found") {
-        format!("{name} 找不到這個模型。到「模型與金鑰」從清單選一個模型。")
+        crate::t!("{name} 找不到這個模型。到「模型與金鑰」從清單選一個模型。", name = name)
     } else if status == 413 || m.contains("too large") || m.contains("too long") {
-        "內容太大，模型收不下。截小一點的範圍，或用比較短的檔案再試。".to_string()
+        crate::t!("內容太大，模型收不下。截小一點的範圍，或用比較短的檔案再試。")
     } else if (500..600).contains(&status) || m.contains("overloaded") {
-        format!("{name} 的伺服器暫時忙碌或出錯，稍後再試，或在「模型與金鑰」暫時改用其他服務。")
+        crate::t!("{name} 的伺服器暫時忙碌或出錯，稍後再試，或在「模型與金鑰」暫時改用其他服務。", name = name)
     } else if status == 400 {
-        format!("{name} 不接受這個請求，可能是模型名稱不對，或模型不支援這種內容。")
+        crate::t!("{name} 不接受這個請求，可能是模型名稱不對，或模型不支援這種內容。", name = name)
     } else {
-        format!("{name} 回報錯誤。")
+        crate::t!("{name} 回報錯誤。", name = name)
     };
-    format!("{what}（{status}：{message}）")
+    crate::t!("{what}（{status}：{message}）", what = what, status = status, message = message)
 }
 
 /// The innermost cause of a connection failure, with a plain-language hint. reqwest's own
@@ -162,24 +165,24 @@ pub fn describe_network(e: &reqwest::Error) -> String {
     }
     let hint = network_hint(&root);
     if hint.is_empty() {
-        format!("連線失敗：{root}")
+        crate::t!("連線失敗：{cause}", cause = root)
     } else {
-        format!("連線失敗：{hint}（{root}）")
+        crate::t!("連線失敗：{hint}（{cause}）", hint = hint, cause = root)
     }
 }
 
-pub fn network_hint(cause: &str) -> &'static str {
+pub fn network_hint(cause: &str) -> String {
     let c = cause.to_lowercase();
     if c.contains("certificate") || c.contains("unknownissuer") {
-        "無法驗證伺服器的憑證。常見原因是防毒軟體的 HTTPS 掃描或公司網路攔截了加密連線；請確認系統時間正確，或在防毒軟體中排除 ContextLens"
+        crate::t!("無法驗證伺服器的憑證。常見原因是防毒軟體的 HTTPS 掃描或公司網路攔截了加密連線；請確認系統時間正確，或在防毒軟體中排除 ContextLens")
     } else if c.contains("dns") || c.contains("resolve") || c.contains("no such host") || c.contains("lookup") {
-        "找不到伺服器，請檢查網路連線"
+        crate::t!("找不到伺服器，請檢查網路連線")
     } else if c.contains("timed out") || c.contains("timeout") {
-        "連線逾時，請檢查網路，或稍後再試"
+        crate::t!("連線逾時，請檢查網路，或稍後再試")
     } else if c.contains("refused") || c.contains("reset") || c.contains("forcibly closed") {
-        "連線被拒絕或中斷，可能是防火牆或 Proxy 擋住了"
+        crate::t!("連線被拒絕或中斷，可能是防火牆或 Proxy 擋住了")
     } else {
-        ""
+        String::new()
     }
 }
 
@@ -356,7 +359,7 @@ pub fn extract_delta(provider: Provider, data: &str) -> Result<Vec<Delta>, Provi
             }
             Some("error") => return Err(stream_error(provider, v.get("error").unwrap_or(&Value::Null))),
             Some("message_delta") if v.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("refusal") => {
-                return Err(ProviderError::Stream("Claude 婉拒處理這段內容。可以改用其他服務試試。".into()));
+                return Err(ProviderError::Stream(crate::t!("Claude 婉拒處理這段內容。可以改用其他服務試試。")));
             }
             _ => {}
         },
@@ -365,7 +368,7 @@ pub fn extract_delta(provider: Provider, data: &str) -> Result<Vec<Delta>, Provi
                 return Err(stream_error(provider, e));
             }
             if let Some(reason) = v.pointer("/promptFeedback/blockReason").and_then(Value::as_str) {
-                return Err(ProviderError::Stream(format!("Gemini 拒絕了這段內容（{reason}）")));
+                return Err(ProviderError::Stream(crate::t!("Gemini 拒絕了這段內容（{reason}）", reason = reason)));
             }
             let text: String = v
                 .pointer("/candidates/0/content/parts")
