@@ -452,6 +452,7 @@ fn start_live(app: &AppHandle, sources: Vec<live::LiveSource>, tutor: bool) -> R
             idle_minutes: settings.live_idle_minutes,
             screen,
             notice,
+            glossary: prompt::glossary_note(&settings.glossary, None),
         },
     )?;
     *state.live.lock().unwrap() = Some(handle);
@@ -877,10 +878,15 @@ async fn run_translation(
     };
     let web = contextlens_core::can_search(provider, &model);
     let mut req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
+    let (to_english, glossary) = {
+        let s = state.settings.lock().unwrap();
+        (s.own_language_to_english, s.glossary.clone())
+    };
     if task == Task::Translate {
-        let to_english = state.settings.lock().unwrap().own_language_to_english;
         req.system.push_str(&prompt::language_note(&input.text, !req.media.is_empty(), &lang, to_english));
     }
+    let scope = req.media.is_empty().then_some(input.text.as_str());
+    req.system.push_str(&prompt::glossary_note(&glossary, scope));
 
     let mut full = String::new();
     let mut sources: Vec<(String, String)> = Vec::new();
@@ -918,6 +924,7 @@ async fn run_translation(
             reason: "這次無法上網搜尋（免費金鑰通常不支援搜尋，或已超過搜尋額度），以下是模型本身的知識，可能不是最新資訊。".into(),
         });
         req = prompt::build_task(task, tutor, &input.text, req.media.first().cloned(), &lang, false);
+        req.system.push_str(&prompt::glossary_note(&glossary, scope));
         result = stream_raw(&state, provider, &model, &req, Some(gen), |d| match d {
             Delta::Text(t) => {
                 full.push_str(&t);
@@ -1048,9 +1055,14 @@ async fn follow_up(
         (_, Some(a), Some(p)) if !p.trim().is_empty() => conversation::about_selection(&a, p.trim()),
         _ => return Err("問題是空的".into()),
     };
-    let lang = state.settings.lock().unwrap().target_language.clone();
+    let (lang, glossary) = {
+        let s = state.settings.lock().unwrap();
+        (s.target_language.clone(), s.glossary.clone())
+    };
     let web = contextlens_core::can_search(convo.provider, &convo.model);
-    let req = convo.follow_up(&question, &lang, web);
+    let mut req = convo.follow_up(&question, &lang, web);
+    let about = format!("{}\n{}\n{question}", convo.text, convo.answer);
+    req.system.push_str(&prompt::glossary_note(&glossary, (convo.media.is_none() && !convo.media_lost).then_some(about.as_str())));
     let _ = on_event.send(StreamEvent::Question { text: question.clone() });
 
     let mut answer = String::new();

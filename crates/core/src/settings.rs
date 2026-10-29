@@ -115,6 +115,18 @@ impl From<HotkeyWire> for Hotkey {
     }
 }
 
+/// A fixed rendering for a name or term the models keep getting wrong (a song title, a person).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct GlossaryEntry {
+    /// As it appears in the source, e.g. `SWIM` or `防弾少年団`.
+    pub term: String,
+    /// How to write it in the translation, e.g. `SWIM` or `BTS`.
+    pub rendering: String,
+    /// Optional context for the model, e.g. "a BTS song title".
+    pub note: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(default)]
 pub struct Models {
@@ -187,6 +199,8 @@ pub struct Settings {
     pub welcome_seen: bool,
     /// The default Live hotkey was added once; removing it later keeps it removed.
     pub live_hotkey_added: bool,
+    /// Fixed renderings, given to the models with every request that may contain them.
+    pub glossary: Vec<GlossaryEntry>,
     /// `own_language_to_english` was moved to its new default once. Versions before 0.1.11
     /// saved the old default (off) without the user choosing it.
     pub own_language_upgraded: bool,
@@ -227,6 +241,7 @@ impl Default for Settings {
             welcome_seen: false,
             live_hotkey_added: false,
             own_language_upgraded: false,
+            glossary: vec![],
         }
     }
 }

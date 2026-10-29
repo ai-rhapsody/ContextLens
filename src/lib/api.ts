@@ -21,6 +21,9 @@ export interface Hotkey {
   live_sources?: LiveSource[];
 }
 
+/** A fixed rendering for a name or term, e.g. a song title. */
+export interface GlossaryEntry { term: string; rendering: string; note: string }
+
 export interface Settings {
   target_language: string;
   provider: Provider;
@@ -42,6 +45,7 @@ export interface Settings {
   welcome_seen: boolean;
   live_hotkey_added: boolean;
   own_language_upgraded: boolean;
+  glossary: GlossaryEntry[];
 }
 
 export interface Media {

@@ -1,6 +1,6 @@
 use crate::media::Media;
 use crate::provider::ChatRequest;
-use crate::settings::Task;
+use crate::settings::{GlossaryEntry, Task};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -68,6 +68,34 @@ pub fn build_task(task: Task, tutor: bool, text: &str, media: Option<Media>, tar
 /// show as raw symbols.
 pub const FORMAT_RULE: &str = " Formatting: besides the required ## headings, use only **bold** and \"- \" bullet lists. \
      No other Markdown: no ### subheadings, tables, italics or code fences.";
+
+/// Most glossary entries sent with a request that the text cannot narrow down (pictures, Live).
+const GLOSSARY_MAX: usize = 60;
+
+/// Appended to a request: the user's fixed renderings. With `text`, only the terms in it are
+/// sent; without (a picture, audio, Live) all of them, up to [`GLOSSARY_MAX`].
+pub fn glossary_note(entries: &[GlossaryEntry], text: Option<&str>) -> String {
+    let lower = text.map(str::to_lowercase);
+    let picked: Vec<String> = entries
+        .iter()
+        .filter(|e| !e.term.trim().is_empty() && !e.rendering.trim().is_empty())
+        .filter(|e| lower.as_ref().is_none_or(|t| t.contains(&e.term.trim().to_lowercase())))
+        .take(GLOSSARY_MAX)
+        .map(|e| {
+            let note = e.note.trim();
+            let note = if note.is_empty() { String::new() } else { format!(" ({note})") };
+            format!("\"{}\" → \"{}\"{note}", e.term.trim(), e.rendering.trim())
+        })
+        .collect();
+    if picked.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Glossary from the reader: wherever one of these terms comes up, write it exactly as given, \
+         even if you would translate it differently: {}.",
+        picked.join("; ")
+    )
+}
 
 /// Appended to a translation: settles which language the text is in, so the model does not
 /// have to guess (it took kanji-heavy Japanese for Chinese, and translated it into English).
@@ -301,6 +329,21 @@ pub fn build(mode: Mode, text: &str, media: Option<Media>, target: &str) -> Chat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(term: &str, rendering: &str, note: &str) -> GlossaryEntry {
+        GlossaryEntry { term: term.into(), rendering: rendering.into(), note: note.into() }
+    }
+
+    #[test]
+    fn the_glossary_sends_the_terms_the_text_holds() {
+        let g = [entry("SWIM", "SWIM", "a BTS song title"), entry("防弾少年団", "BTS", ""), entry(" ", "x", "")];
+        let note = glossary_note(&g, Some("新曲「Swim」が公開された"));
+        assert!(note.contains("\"SWIM\" → \"SWIM\" (a BTS song title)") && !note.contains("BTS\""), "{note}");
+        let all = glossary_note(&g, None);
+        assert!(all.contains("\"防弾少年団\" → \"BTS\"") && all.contains("SWIM"), "{all}");
+        assert_eq!(glossary_note(&g, Some("nothing here")), "");
+        assert_eq!(glossary_note(&[], None), "");
+    }
 
     #[test]
     fn the_writing_system_says_whose_language_a_text_is_in() {

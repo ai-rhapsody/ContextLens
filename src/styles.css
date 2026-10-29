@@ -370,3 +370,8 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .lv-model { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; min-width: 48px; flex: 0 1 auto; }
 .status-line { overflow-wrap: anywhere; user-select: text; }
 .release-notes { font: inherit; font-size: 13px; line-height: 20px; }
+
+.glossary .gl-head, .glossary .gl-row { display: grid; grid-template-columns: 1fr 1fr 1.4fr 32px; gap: 8px; }
+.glossary .gl-head { min-height: 0; padding-bottom: 0; font-size: 12px; color: var(--muted); }
+.glossary .gl-head + .row { border-top: 0; }
+.glossary .gl-row .field { width: 100%; min-width: 0; }

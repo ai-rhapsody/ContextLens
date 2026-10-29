@@ -136,6 +136,8 @@ pub struct StartArgs {
     pub screen: Option<ScreenTarget>,
     /// Shown with "listening", e.g. that the microphone was swapped for system audio.
     pub notice: Option<String>,
+    /// The user's fixed renderings, as a note for the instructions.
+    pub glossary: String,
 }
 
 fn emit(app: &AppHandle, e: LiveUi) {
@@ -535,6 +537,7 @@ pub async fn probe(app: &AppHandle, backend: Backend, model: &str, api_key: &str
             resume_handle: None,
             screen: ScreenMode::None,
             manual_activity: backend.manual_activity(),
+            glossary: "",
         });
         let (tx, mut rx) = mpsc::channel(4);
         let (stop_tx, mut stop_rx) = watch::channel(false);
@@ -620,6 +623,7 @@ async fn reader(
     stop: &mut watch::Receiver<bool>,
     transcript: &mut Transcript,
     notice: Option<String>,
+    glossary: &str,
 ) {
     let http = contextlens_core::http_client();
     let mut frame: Option<String> = None;
@@ -636,7 +640,7 @@ async fn reader(
             Some(Outgoing::Audio(_)) => {}
             Some(Outgoing::Turn(_)) => {
                 let Some(f) = frame.clone() else { continue };
-                let mut system = live::system_prompt(target, tutor, ScreenMode::Reader);
+                let mut system = live::system_prompt(target, tutor, ScreenMode::Reader) + glossary;
                 if !recent.is_empty() {
                     let done: Vec<&str> = recent.iter().map(String::as_str).collect();
                     system += &format!("\nYou already translated this; do not repeat it:\n{}", done.join("\n"));
@@ -811,7 +815,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
         match &args.engine {
             Engine::Reader { provider, model, api_key } => {
                 reader(&app, *provider, model, api_key, &args.target_language, args.tutor,
-                       &mut out_rx, &mut stop_rx, &mut transcript, args.notice.clone()).await;
+                       &mut out_rx, &mut stop_rx, &mut transcript, args.notice.clone(), &args.glossary).await;
             }
             Engine::Realtime { backend, model, api_key, fallback } => {
                 let mut backend = *backend;
@@ -835,6 +839,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                         resume_handle: resume.as_deref(),
                         screen: screen_mode,
                         manual_activity: manual,
+                        glossary: &args.glossary,
                     });
                     let mut announced = false;
                     let ui = app.clone();
@@ -1011,7 +1016,7 @@ mod tests {
     fn setup() -> serde_json::Value {
         live::setup_message(&LiveConfig {
             model: "m", target_language: "繁體中文", tutor: false, text_output: true, resume_handle: None,
-            screen: ScreenMode::None, manual_activity: true,
+            screen: ScreenMode::None, manual_activity: true, glossary: "",
         })
     }
 
