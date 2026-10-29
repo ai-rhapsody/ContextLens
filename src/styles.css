@@ -381,3 +381,6 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .lv-size { display: flex; flex: none; }
 .lv-size .btn { height: 26px; padding: 0 6px; font-size: 12px; }
 .lv-sub .grow { flex: 1; }
+/* Row labels on the models page: two Chinese characters, or a word in other languages. */
+.mp-label { flex: none; width: 92px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html:lang(zh-TW) .mp-label { width: 40px; }

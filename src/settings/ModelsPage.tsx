@@ -53,7 +53,7 @@ function ProviderRow(props: {
         {hasKey ? <span className="pill ok">{t("金鑰已設定")}</span> : <span className="faint">{t("未設定")}</span>}
       </div>
       <div className="provider-line">
-        <span className="muted" style={{ width: 40 }}>{t("模型")}</span>
+        <span className="muted mp-label">{t("模型")}</span>
         <ModelPicker
           value={settings.models[id]} presets={MODEL_PRESETS[id]} ariaLabel={t("{name} 模型", { name: props.name })}
           onCommit={(v) => props.commit({ ...settings, models: { ...settings.models, [id]: v } })}
@@ -61,7 +61,7 @@ function ProviderRow(props: {
       </div>
       {LIVE_FIELD[id] && (
         <div className="provider-line">
-          <span className="muted" style={{ width: 40 }} title={t("Live 即時翻譯用的模型")}>{t("即時")}</span>
+          <span className="muted mp-label" title={t("Live 即時翻譯用的模型")}>{t("即時")}</span>
           <ModelPicker
             value={settings.models[LIVE_FIELD[id]!]} presets={LIVE_PRESETS[id] ?? []} ariaLabel={t("{name} 即時模型", { name: props.name })}
             placeholder={LIVE_HINT[id] && t("例如 {model}", { model: LIVE_HINT[id]! })}
@@ -70,7 +70,7 @@ function ProviderRow(props: {
         </div>
       )}
       <div className="provider-line">
-        <span className="muted" style={{ width: 40 }} title={t("「解釋」和「搜尋」用的模型，需要較多知識")}>{t("解釋")}</span>
+        <span className="muted mp-label" title={t("「解釋」和「搜尋」用的模型，需要較多知識")}>{t("解釋")}</span>
         <ModelPicker
           value={settings.models[`${id}_explain`] ?? ""}
           presets={[{ id: "", label: N_("同翻譯模型"), note: "" }, ...MODEL_PRESETS[id]]}
@@ -80,7 +80,7 @@ function ProviderRow(props: {
       </div>
       {id === "gemini" && (
         <div className="provider-line">
-          <span className="muted" style={{ width: 40 }} title={t("Live 只聽聲音、沒開註解時使用的口譯模型")}>{t("口譯")}</span>
+          <span className="muted mp-label" title={t("Live 只聽聲音、沒開註解時使用的口譯模型")}>{t("口譯")}</span>
           <ModelPicker
             value={settings.models.gemini_translate} presets={TRANSLATE_PRESETS} ariaLabel={t("Gemini 口譯模型")}
             placeholder={t("例如 {model}", { model: "gemini-3.5-live-translate-preview" })}
@@ -89,12 +89,12 @@ function ProviderRow(props: {
         </div>
       )}
       <div className="provider-line">
-        <span className="muted" style={{ width: 40 }}>{t("能力")}</span>
+        <span className="muted mp-label">{t("能力")}</span>
         <CapsRow caps={props.caps} />
         {props.web && <span className="cap on" title={t("搜尋動作可以上網查資料")}>{t("可上網")}</span>}
       </div>
       <div className="provider-line">
-        <span className="muted" style={{ width: 40 }}>{t("金鑰")}</span>
+        <span className="muted mp-label">{t("金鑰")}</span>
         <input
           className="field" type="password" value={key} autoComplete="off" spellCheck={false}
           placeholder={hasKey ? t("貼上新金鑰以取代") : t("貼上 API 金鑰")} aria-label={t("{name} API 金鑰", { name: props.name })}
