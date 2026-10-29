@@ -32,9 +32,9 @@ pub struct Conversation {
 /// Quick follow-ups for a selected phrase in an answer.
 pub fn about_selection(action: &str, phrase: &str) -> String {
     match action {
-        "examples" => format!("請針對「{phrase}」給三個自然的例句，附上翻譯。"),
-        "rephrase" => format!("「{phrase}」還有哪些說法？說明語氣或使用情境的差別。"),
-        _ => format!("請解釋「{phrase}」在這裡的意思和用法。"),
+        "examples" => crate::t!("請針對「{phrase}」給三個自然的例句，附上翻譯。", phrase = phrase),
+        "rephrase" => crate::t!("「{phrase}」還有哪些說法？說明語氣或使用情境的差別。", phrase = phrase),
+        _ => crate::t!("請解釋「{phrase}」在這裡的意思和用法。", phrase = phrase),
     }
 }
 
@@ -43,7 +43,7 @@ impl Conversation {
     pub fn follow_up(&self, question: &str, target: &str, web: bool) -> ChatRequest {
         let media = if self.media_lost { None } else { self.media.clone() };
         let text = if self.media_lost && !self.label.is_empty() {
-            format!("（原本的{}已不在，只剩下面的回答）{}", self.label, self.text)
+            crate::t!("（原本的{label}已不在，只剩下面的回答）", label = self.label) + &self.text
         } else {
             self.text.clone()
         };

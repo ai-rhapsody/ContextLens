@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { t } from "./i18n";
 
 /**
  * Skeleton shown while the model thinks. Every bar paints a slice of one viewport-sized
@@ -90,7 +91,7 @@ export function Thinking({ groups = 1, startedAt }: { groups?: number; startedAt
   }, [startedAt]);
 
   return (
-    <div className="thinking" ref={root} role="status" aria-label="思考中">
+    <div className="thinking" ref={root} role="status" aria-label={t("思考中")}>
       {shape.map((g, i) => (
         <div className="sk-group" key={i}>
           {groups > 1 && <i className="sk-bar sk-head" style={{ width: `${g.head}%` }} />}
@@ -99,7 +100,7 @@ export function Thinking({ groups = 1, startedAt }: { groups?: number; startedAt
           ))}
         </div>
       ))}
-      <p className="sk-note num">{seconds >= 2 ? `思考中 · ${seconds} 秒` : "思考中"}</p>
+      <p className="sk-note num">{seconds >= 2 ? t("思考中 · {seconds} 秒", { seconds }) : t("思考中")}</p>
     </div>
   );
 }

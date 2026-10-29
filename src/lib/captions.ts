@@ -1,11 +1,16 @@
+import { N_, t, variants } from "./i18n";
+
 /** A Live caption: what was heard, its translation, and when (ms since 1970) it was heard. */
 export type Caption = { input: string; output: string; divider?: string; start?: number; end?: number };
 
-const NOTE = "註：";
+const NOTE = N_("註：");
+
+/** Whether an output line is a tutor note; the model writes the prefix in the interface language. */
+export const isNote = (line: string) => variants(NOTE).some((p) => line.startsWith(p));
 
 /** Translation lines without the tutor notes. */
 function lines(output: string): string[] {
-  return output.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith(NOTE));
+  return output.split("\n").map((l) => l.trim()).filter((l) => l && !isNote(l));
 }
 
 /** Plain text: each original above its translation and notes, sessions marked. */
@@ -13,7 +18,7 @@ export function toText(captions: Caption[]): string {
   const out: string[] = [];
   for (const c of captions) {
     if (c.divider) {
-      out.push(`—— ${c.divider} 開始 ——`, "");
+      out.push(t("—— {time} 開始 ——", { time: c.divider }), "");
       continue;
     }
     if (c.input.trim()) out.push(c.input.trim());

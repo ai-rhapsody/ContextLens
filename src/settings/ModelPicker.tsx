@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { t } from "../lib/i18n";
 import type { ModelOption } from "../lib/models";
 import { TextField } from "./TextField";
 
@@ -33,16 +34,16 @@ export function ModelPicker(props: {
       >
         {props.presets.map((p, i) => (
           <option key={p.id} value={p.id}>
-            {p.label}{p.note ? `　${p.note}` : ""}{(props.defaultId === undefined ? i === 0 : p.id === props.defaultId) ? "（預設）" : ""}
+            {t(p.label)}{p.note ? `　${t(p.note)}` : ""}{(props.defaultId === undefined ? i === 0 : p.id === props.defaultId) ? t("（預設）") : ""}
           </option>
         ))}
-        <option value={CUSTOM}>自訂…</option>
+        <option value={CUSTOM}>{t("自訂…")}</option>
       </select>
       {custom && (
         <TextField
           value={known ? "" : props.value}
-          ariaLabel={`${props.ariaLabel}（自訂）`}
-          placeholder={props.placeholder ?? "輸入模型名稱"}
+          ariaLabel={t("{label}（自訂）", { label: props.ariaLabel })}
+          placeholder={props.placeholder ?? t("輸入模型名稱")}
           onCommit={(v) => v && props.onCommit(v)}
         />
       )}

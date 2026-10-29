@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { chatPending, convoGet, dataUrl, PROVIDERS, TASKS, type Conversation } from "../lib/api";
 import { KIND_LABEL, kindOf } from "../lib/files";
 import { Answer, FollowBar, SelectionMenu, Sources, Thread, useStickToBottom, useThread } from "../lib/convo";
+import { isKey, t } from "../lib/i18n";
+import { parseSections } from "../lib/sections";
 
 /** The conversation window: one capture, its answer and every follow-up, with room to keep asking. */
 export function Chat() {
@@ -46,37 +48,39 @@ export function Chat() {
     return () => { un.then((f) => f()); };
   }, [thread.reset]);
 
-  if (missing) return <div className="chat"><p className="boot">找不到這段對話，可能已從歷史紀錄刪除。</p></div>;
-  if (!convo) return <div className="chat"><p className="boot">載入中…</p></div>;
+  if (missing) return <div className="chat"><p className="boot">{t("找不到這段對話，可能已從歷史紀錄刪除。")}</p></div>;
+  if (!convo) return <div className="chat"><p className="boot">{t("載入中…")}</p></div>;
 
   const kind = convo.media ? kindOf(convo.media.mime) : null;
   const provider = PROVIDERS.find((p) => p.id === convo.provider)?.name;
-  const taskLabel = convo.task === "custom" ? convo.action?.name || "自訂" : TASKS.find((t) => t.id === convo.task)?.label;
+  const taskLabel = convo.task === "custom" ? convo.action?.name || t("自訂") : t(TASKS.find((x) => x.id === convo.task)?.label ?? "");
 
   return (
     <div className="chat">
       <div className="chat-head">
-        <span className="chat-task">{taskLabel}{convo.tutor ? " · 教學" : ""}</span>
-        <span className="chat-title">{convo.text || convo.label || "對話"}</span>
+        <span className="chat-task">{taskLabel}{convo.tutor ? ` · ${t("教學")}` : ""}</span>
+        <span className="chat-title">{convo.text || convo.label || t("對話")}</span>
       </div>
 
       <div className="chat-body" ref={body}>
         <div className="chat-col">
           {convo.media && (
             <div className="src-media">
-              {kind === "image" && <img src={dataUrl(convo.media)} alt={convo.media.name ?? "擷取的圖片"} />}
+              {kind === "image" && <img src={dataUrl(convo.media)} alt={convo.media.name ?? t("擷取的圖片")} />}
               {kind === "audio" && <audio controls src={dataUrl(convo.media)} />}
               {kind === "video" && <video controls src={dataUrl(convo.media)} />}
             </div>
           )}
-          {!convo.media && convo.text && !/^##\s*原文/m.test(convo.answer) && (
-            <p className={`src${openSrc ? " open" : ""}`} onClick={() => setOpenSrc((v) => !v)} title="點一下展開原文">
+          {!convo.media && convo.text && !parseSections(convo.answer).some((s) => isKey(s.title, "heading::原文")) && (
+            <p className={`src${openSrc ? " open" : ""}`} onClick={() => setOpenSrc((v) => !v)} title={t("點一下展開原文")}>
               {convo.text}
             </p>
           )}
           {convo.media_lost && (
             <p className="faint chat-note">
-              原本的{convo.label ? `「${convo.label}」` : KIND_LABEL.image}沒有保存，追問會根據上面的回答。
+              {t("原本的{what}沒有保存，追問會根據上面的回答。", {
+                what: convo.label ? t("「{label}」", { label: convo.label }) : t(KIND_LABEL.image),
+              })}
             </p>
           )}
           <div className="ex first"><Answer text={convo.answer} task={convo.task} streaming={false} /></div>
@@ -88,7 +92,7 @@ export function Chat() {
       <div className="chat-foot">
         <div className="chat-col">
           <FollowBar task={convo.task} busy={thread.busy} onAsk={thread.ask} autoFocus />
-          <p className="faint chat-meta">{provider} · {convo.model} · 在回答裡選取文字可以直接追問</p>
+          <p className="faint chat-meta">{provider} · {convo.model} · {t("在回答裡選取文字可以直接追問")}</p>
         </div>
       </div>
       <SelectionMenu root={body} busy={thread.busy} onAsk={thread.ask} />

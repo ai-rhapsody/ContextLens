@@ -4,23 +4,24 @@ import {
   historyClear, historyDelete, historyExport, historyList, historyStar, openChat, openLink, PROVIDERS, type HistoryEntry, type Settings,
 } from "../lib/api";
 import { KIND_LABEL } from "../lib/files";
+import { isKey, locale, t } from "../lib/i18n";
 import { parseSections } from "../lib/sections";
 import { Rich } from "../lib/Rich";
 
 function when(ms: number): string {
   const diff = (Date.now() - ms) / 1000;
-  if (diff < 60) return "剛剛";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分鐘前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小時前`;
+  if (diff < 60) return t("剛剛");
+  if (diff < 3600) return t("{n} 分鐘前", { n: Math.floor(diff / 60) });
+  if (diff < 86400) return t("{n} 小時前", { n: Math.floor(diff / 3600) });
   const d = new Date(ms);
   const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString("zh-TW", sameYear ? { month: "numeric", day: "numeric" } : undefined);
+  return d.toLocaleDateString(locale(), sameYear ? { month: "numeric", day: "numeric" } : undefined);
 }
 
 /** The line shown in the list: the translation, the explanation or the identification. */
 function translationOf(e: HistoryEntry): string {
   const s = parseSections(e.result + "\n");
-  return (s.find((x) => x.title === "翻譯") ?? s.find((x) => x.title === "說明") ?? s.find((x) => x.title === "這是什麼"))?.body
+  return (s.find((x) => isKey(x.title, "heading::翻譯")) ?? s.find((x) => isKey(x.title, "heading::說明")) ?? s.find((x) => isKey(x.title, "heading::這是什麼")))?.body
     ?? e.result;
 }
 
@@ -57,7 +58,7 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
   const exportAs = async (format: "csv" | "anki") => {
     try {
       const path = await historyExport(query, starredOnly, format);
-      setExported({ ok: true, text: `已匯出到 ${path}` });
+      setExported({ ok: true, text: t("已匯出到 {path}", { path }) });
     } catch (e) {
       setExported({ ok: false, text: String(e) });
     }
@@ -73,29 +74,29 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
 
   return (
     <>
-      <h1>歷史紀錄</h1>
+      <h1>{t("歷史紀錄")}</h1>
       <p className="lede">
-        翻譯完成後的結果，存在這台電腦上，最多 1000 筆。按 ☆ 收藏想記住的句子，再匯出成 Excel 表格或 Anki 單字卡。
+        {t("翻譯完成後的結果，存在這台電腦上，最多 1000 筆。按 ☆ 收藏想記住的句子，再匯出成 Excel 表格或 Anki 單字卡。")}
       </p>
       {!settings.save_history && (
         <div className="panel"><div className="row">
-          <span className="grow muted">保存歷史紀錄目前是關閉的，新的翻譯不會出現在這裡。</span>
-          <button className="btn" onClick={onOpenGeneral}>前往設定</button>
+          <span className="grow muted">{t("保存歷史紀錄目前是關閉的，新的翻譯不會出現在這裡。")}</span>
+          <button className="btn" onClick={onOpenGeneral}>{t("前往設定")}</button>
         </div></div>
       )}
       <div className="toolbar">
-        <input className="field grow" type="search" placeholder="搜尋原文或譯文" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="搜尋" />
+        <input className="field grow" type="search" placeholder={t("搜尋原文或譯文")} value={query} onChange={(e) => setQuery(e.target.value)} aria-label={t("搜尋")} />
         <button className={`btn quiet${starredOnly ? " on" : ""}`} aria-pressed={starredOnly} onClick={() => setStarredOnly((v) => !v)}>
-          {starredOnly ? "★ 只看收藏" : "☆ 只看收藏"}
+          {starredOnly ? "★ " : "☆ "}{t("只看收藏")}
         </button>
         <select
-          className="field" value="" aria-label="匯出" disabled={!shown?.length}
-          title={starredOnly ? "匯出收藏的紀錄" : "匯出目前列出的紀錄"}
+          className="field" value="" aria-label={t("匯出")} disabled={!shown?.length}
+          title={starredOnly ? t("匯出收藏的紀錄") : t("匯出目前列出的紀錄")}
           onChange={(e) => { const f = e.target.value as "csv" | "anki"; e.target.value = ""; if (f) exportAs(f); }}
         >
-          <option value="" disabled>匯出…</option>
-          <option value="csv">Excel 表格（CSV）</option>
-          <option value="anki">Anki 單字卡</option>
+          <option value="" disabled>{t("匯出…")}</option>
+          <option value="csv">{t("Excel 表格（CSV）")}</option>
+          <option value="anki">{t("Anki 單字卡")}</option>
         </select>
         <button
           className={`btn quiet${confirmClear ? " danger" : ""}`}
@@ -106,18 +107,18 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
             setConfirmClear(false);
             load();
           }}
-        >{confirmClear ? "再按一次清除全部" : "清除全部"}</button>
+        >{confirmClear ? t("再按一次清除全部") : t("清除全部")}</button>
       </div>
       {exported && (
         <p className={`status-line${exported.ok ? "" : " err"}`} role="status">
-          {exported.text}{exported.ok && "　Anki：檔案 → 匯入，選這個檔案即可。"}
+          {exported.text}{exported.ok && "　" + t("Anki：檔案 → 匯入，選這個檔案即可。")}
         </p>
       )}
       <div className="panel history">
-        {rows === null && <div className="empty">載入中…</div>}
+        {rows === null && <div className="empty">{t("載入中…")}</div>}
         {shown?.length === 0 && (
           <div className="empty">
-            {query ? `找不到「${query}」。` : starredOnly ? "還沒有收藏。展開一筆紀錄按 ☆ 收藏。" : "還沒有紀錄。翻譯完成後會出現在這裡。"}
+            {query ? t("找不到「{query}」。", { query }) : starredOnly ? t("還沒有收藏。展開一筆紀錄按 ☆ 收藏。") : t("還沒有紀錄。翻譯完成後會出現在這裡。")}
           </div>
         )}
         {shown?.map((e) => {
@@ -126,16 +127,16 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
           return (
             <div className={`h-row${isOpen ? " open" : ""}`} key={e.at_ms}>
               <button className="h-main" onClick={() => setOpen(isOpen ? null : e.at_ms)} aria-expanded={isOpen}>
-                {e.thumb ? <img className="h-thumb" src={e.thumb} alt="" /> : e.kind !== "text" ? <span className="h-kind">{KIND_LABEL[e.kind]}</span> : null}
+                {e.thumb ? <img className="h-thumb" src={e.thumb} alt="" /> : e.kind !== "text" ? <span className="h-kind">{t(KIND_LABEL[e.kind])}</span> : null}
                 <span className="h-text">
                   <span className="h-src">{e.source}</span>
                   <span className="h-res">{translationOf(e)}</span>
                 </span>
                 <span className="h-meta">
-                  {e.starred && <span className="h-star" aria-label="已收藏">★</span>}
+                  {e.starred && <span className="h-star" aria-label={t("已收藏")}>★</span>}
                   <span className="num">{when(e.at_ms)}</span>
-                  {e.tutor && <span className="faint">教學</span>}
-                  {!!e.thread?.length && <span className="faint">追問 {e.thread.length}</span>}
+                  {e.tutor && <span className="faint">{t("教學")}</span>}
+                  {!!e.thread?.length && <span className="faint">{t("追問 {n}", { n: e.thread.length })}</span>}
                 </span>
               </button>
               {isOpen && (
@@ -145,7 +146,7 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
                   ))}
                   {!!e.sources?.length && (
                     <section className="sec sources">
-                      <h2>來源</h2>
+                      <h2>{t("來源")}</h2>
                       <ol>
                         {e.sources.map(([title, url]) => (
                           <li key={url}><button className="link" onClick={() => openLink(url)} title={url}>{title}</button></li>
@@ -162,13 +163,13 @@ export function HistoryPage({ settings, onOpenGeneral }: { settings: Settings; o
                   <div className="h-actions">
                     <span className="faint grow">{provider} · {e.model}</span>
                     <button className="btn primary" onClick={() => openChat(e.at_ms)}>
-                      {e.thread?.length ? `繼續對話（${e.thread.length}）` : "繼續對話"}
+                      {e.thread?.length ? t("繼續對話（{n}）", { n: e.thread.length }) : t("繼續對話")}
                     </button>
                     <button className="btn quiet" aria-pressed={!!e.starred} onClick={() => star(e)}>
-                      {e.starred ? "★ 已收藏" : "☆ 收藏"}
+                      {e.starred ? "★ " + t("已收藏") : "☆ " + t("收藏")}
                     </button>
-                    <button className="btn" onClick={() => copy(e)}>{copied === e.at_ms ? "已複製" : "複製譯文"}</button>
-                    <button className="btn quiet danger" onClick={() => remove(e.at_ms)}>刪除</button>
+                    <button className="btn" onClick={() => copy(e)}>{copied === e.at_ms ? t("已複製") : t("複製譯文")}</button>
+                    <button className="btn quiet danger" onClick={() => remove(e.at_ms)}>{t("刪除")}</button>
                   </div>
                 </div>
               )}

@@ -19,6 +19,7 @@
 - [x] Vocabulary: star history items, export to CSV or Anki
 - [x] Live: caption size, export to TXT or SRT
 - [x] Local diagnostics log and a copy-diagnostics button
+- [x] Interface in Traditional Chinese, English, Japanese, Korean and Spanish, following the system language
 
 ## Next
 - [ ] Live: follow a window when it moves (today the picked rectangle is fixed)

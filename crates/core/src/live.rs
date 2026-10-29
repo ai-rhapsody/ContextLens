@@ -151,7 +151,7 @@ pub fn parse_openai(msg: &str) -> Vec<ServerEvent> {
             }
         }
         "error" => vec![ServerEvent::Error(
-            v.pointer("/error/message").and_then(Value::as_str).unwrap_or("OpenAI Realtime 錯誤").into(),
+            v.pointer("/error/message").and_then(Value::as_str).map_or_else(|| crate::t!("OpenAI Realtime 錯誤"), String::from),
         )],
         _ => vec![],
     }
@@ -163,8 +163,11 @@ pub fn url(api_key: &str) -> String {
     )
 }
 
-/// A line of tutor commentary starts with this, so the caption bar can style it apart.
-pub const NOTE_PREFIX: &str = "註：";
+/// A line of tutor commentary starts with this, so the caption bar can style it apart. It is
+/// in the interface language; the caption bar knows every language's version.
+pub fn note_prefix() -> String {
+    crate::t!("註：")
+}
 
 /// How a session uses the screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -227,8 +230,9 @@ pub fn system_prompt(target: &str, tutor: bool, screen: ScreenMode) -> String {
     if tutor {
         p += &format!(
             " After a translation, if the original used an idiom, a tricky grammar point or a useful phrase, \
-             add one more line that starts with \"{NOTE_PREFIX}\" and explains it in {target} in one sentence. \
-             Most sentences need no note."
+             add one more line that starts with \"{prefix}\" and explains it in {target} in one sentence. \
+             Most sentences need no note.",
+            prefix = note_prefix()
         );
     }
     p
@@ -470,11 +474,15 @@ pub fn is_stale_session(reason: &str) -> bool {
 pub fn explain_error(reason: &str, model: &str) -> String {
     let r = reason.to_lowercase();
     if r.contains("session not found") || r.contains("expired") {
-        "即時連線已過期，請再按一次「開始」。".into()
+        crate::t!("即時連線已過期，請再按一次「開始」。")
     } else if (r.contains("models/") && r.contains("not found")) || r.contains("is not supported for bidigeneratecontent") {
-        format!("找不到即時模型「{model}」，或它不支援 Live。到「模型與金鑰」從清單選一個即時模型。（{reason}）")
+        crate::t!(
+            "找不到即時模型「{model}」，或它不支援 Live。到「模型與金鑰」從清單選一個即時模型。（{reason}）",
+            model = model,
+            reason = reason
+        )
     } else if r.contains("api key") || r.contains("unauthenticated") || r.contains("401") {
-        format!("API 金鑰無效，到「模型與金鑰」重新貼上。（{reason}）")
+        crate::t!("API 金鑰無效，到「模型與金鑰」重新貼上。（{reason}）", reason = reason)
     } else {
         reason.to_string()
     }
@@ -785,8 +793,8 @@ mod tests {
 
     #[test]
     fn tutor_prompt_adds_notes_with_the_prefix() {
-        assert!(!system_prompt("繁體中文", false, ScreenMode::None).contains(NOTE_PREFIX));
-        assert!(system_prompt("繁體中文", true, ScreenMode::None).contains(NOTE_PREFIX));
+        assert!(!system_prompt("繁體中文", false, ScreenMode::None).contains(&note_prefix()));
+        assert!(system_prompt("繁體中文", true, ScreenMode::None).contains(&note_prefix()));
     }
 
     #[test]

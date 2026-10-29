@@ -5,7 +5,7 @@
 
 use crate::{imaging, store, AppState};
 use contextlens_core::live::{self, Backend, LiveConfig, Resampler, ScreenMode, ServerEvent};
-use contextlens_core::{ChatRequest, Delta, HistoryEntry, Media, Provider, Task};
+use contextlens_core::{i18n::tr, prompt, t, ChatRequest, Delta, HistoryEntry, Media, Provider, Task};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -161,20 +161,20 @@ fn build_stream(
     let host = cpal::default_host();
     let (device, config) = match source {
         LiveSource::Mic => {
-            let d = host.default_input_device().ok_or("找不到麥克風。")?;
-            let c = d.default_input_config().map_err(|e| format!("無法開啟麥克風：{e}"))?;
+            let d = host.default_input_device().ok_or_else(|| t!("找不到麥克風。"))?;
+            let c = d.default_input_config().map_err(|e| t!("無法開啟麥克風：{e}", e = e))?;
             (d, c)
         }
         LiveSource::System => {
             if !SYSTEM_AUDIO_SUPPORTED {
-                return Err("系統聲音目前只支援 Windows。".into());
+                return Err(t!("系統聲音目前只支援 Windows。"));
             }
             // On WASAPI an input stream on an output device records what it plays.
-            let d = host.default_output_device().ok_or("找不到播放裝置。")?;
-            let c = d.default_output_config().map_err(|e| format!("無法錄製系統聲音：{e}"))?;
+            let d = host.default_output_device().ok_or_else(|| t!("找不到播放裝置。"))?;
+            let c = d.default_output_config().map_err(|e| t!("無法錄製系統聲音：{e}", e = e))?;
             (d, c)
         }
-        LiveSource::Screen => return Err("螢幕不是聲音來源。".into()),
+        LiveSource::Screen => return Err(t!("螢幕不是聲音來源。")),
     };
     let mut rs = Resampler::to_rate(config.sample_rate(), config.channels(), rate);
     let err_fn = |e| eprintln!("live capture: {e}");
@@ -206,10 +206,10 @@ fn build_stream(
             err_fn,
             None,
         ),
-        other => return Err(format!("不支援的音訊格式：{other:?}")),
+        other => return Err(t!("不支援的音訊格式：{other}", other = format!("{other:?}"))),
     }
-    .map_err(|e| format!("無法開始錄音：{e}"))?;
-    stream.play().map_err(|e| format!("無法開始錄音：{e}"))?;
+    .map_err(|e| t!("無法開始錄音：{e}", e = e))?;
+    stream.play().map_err(|e| t!("無法開始錄音：{e}", e = e))?;
     Ok(stream)
 }
 
@@ -234,7 +234,7 @@ fn spawn_capture(
             let _ = ready_tx.send(Err(e));
         }
     });
-    ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "音訊裝置沒有回應。".to_string())?
+    ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| t!("音訊裝置沒有回應。"))?
 }
 
 
@@ -332,7 +332,7 @@ fn spawn_screen(
                 m
             }
             Err(e) => {
-                let _ = ready_tx.send(Err(format!("找不到要觀看的螢幕：{e}")));
+                let _ = ready_tx.send(Err(t!("找不到要觀看的螢幕：{e}", e = e)));
                 return;
             }
         };
@@ -368,7 +368,7 @@ fn spawn_screen(
             }
         }
     });
-    ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "螢幕擷取沒有回應。".to_string())?
+    ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| t!("螢幕擷取沒有回應。"))?
 }
 
 /// Calls `on_idle` once when nothing was heard or changed on screen for `limit`.
@@ -423,7 +423,7 @@ async fn session(
     }
     let (mut ws, _) = match tokio_tungstenite::connect_async(request).await {
         Ok(c) => c,
-        Err(e) => return Outcome::Refused(format!("無法連線：{e}")),
+        Err(e) => return Outcome::Refused(t!("無法連線：{e}", e = e)),
     };
     for m in opening {
         if let Err(e) = ws.send(Message::text(m.to_string())).await {
@@ -443,7 +443,7 @@ async fn session(
                 return Outcome::Stopped;
             }
             _ = &mut setup_deadline, if !started => {
-                return Outcome::Refused("即時服務沒有回應。".into());
+                return Outcome::Refused(t!("即時服務沒有回應。"));
             }
             _ = gap_check.tick(), if started && manual => {
                 let gap = last_audio.elapsed().as_millis().min(u32::MAX as u128) as u32;
@@ -490,10 +490,10 @@ async fn session(
                         let mut reason = frame.map(|f| f.reason.to_string()).unwrap_or_default();
                         // A WebSocket close reason holds at most 123 bytes; say when it was cut.
                         if reason.len() >= 120 {
-                            reason.push_str("…（伺服器的說明到這裡被截斷）");
+                            reason.push_str(&t!("…（伺服器的說明到這裡被截斷）"));
                         }
                         return if !started {
-                            Outcome::Refused(if reason.is_empty() { "連線被拒絕。".into() } else { reason })
+                            Outcome::Refused(if reason.is_empty() { t!("連線被拒絕。") } else { reason })
                         } else if reason.is_empty() {
                             Outcome::Reconnect
                         } else {
@@ -502,7 +502,7 @@ async fn session(
                     }
                     Some(Ok(_)) => continue,
                     Some(Err(e)) => return if started { Outcome::Reconnect } else { Outcome::Refused(e.to_string()) },
-                    None => return if started { Outcome::Reconnect } else { Outcome::Refused("連線中斷。".into()) },
+                    None => return if started { Outcome::Reconnect } else { Outcome::Refused(t!("連線中斷。")) },
                 };
                 for ev in backend.parse(&text) {
                     match ev {
@@ -595,7 +595,7 @@ pub async fn probe(app: &AppHandle, backend: Backend, model: &str, api_key: &str
         feeder.abort();
         match outcome {
             Outcome::Stopped | Outcome::Reconnect if setup => return Ok(()),
-            Outcome::Stopped | Outcome::Reconnect => return Err("即時服務沒有回應。".into()),
+            Outcome::Stopped | Outcome::Reconnect => return Err(t!("即時服務沒有回應。")),
             Outcome::Refused(r) | Outcome::Failed(r)
                 if backend == Backend::GeminiLive
                     && text_output
@@ -675,7 +675,7 @@ async fn reader(
                     }
                     Ok(()) => {}
                     // Keep watching: one failed request (rate limit, network) should not end the session.
-                    Err(e) => status(app, "listening", Some(format!("這次沒有翻譯成功：{e}"))),
+                    Err(e) => status(app, "listening", Some(t!("這次沒有翻譯成功：{e}", e = e))),
                 }
             }
         }
@@ -718,7 +718,7 @@ fn save(app: &AppHandle, provider: Provider, model: &str, tutor: bool, mut t: Tr
         kind: "live".into(),
         source: source.chars().take(4000).collect(),
         thumb: None,
-        result: format!("## 原文\n{original}\n## 翻譯\n{translation}\n"),
+        result: format!("## {}\n{original}\n## {}\n{translation}\n", tr(prompt::H_ORIGINAL), tr(prompt::H_TRANSLATION)),
         tutor,
         provider,
         model: model.into(),
@@ -750,7 +750,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
     let audio: Vec<LiveSource> = args.sources.iter().copied().filter(|s| s.is_audio()).collect();
     let rate = match &args.engine {
         Engine::Realtime { backend, .. } => backend.sample_rate(),
-        Engine::Reader { .. } if !audio.is_empty() => return fail("聲音需要即時模型。".into()),
+        Engine::Reader { .. } if !audio.is_empty() => return fail(t!("聲音需要即時模型。")),
         Engine::Reader { .. } => live::SAMPLE_RATE,
     };
     for (i, s) in audio.iter().enumerate() {
@@ -770,7 +770,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
     };
     if screen_mode != ScreenMode::None {
         let Some(target) = args.screen.clone() else {
-            return fail("先選擇要讓 Live 看的螢幕範圍。".into());
+            return fail(t!("先選擇要讓 Live 看的螢幕範圍。"));
         };
         let reader = screen_mode == ScreenMode::Reader;
         if let Err(e) = spawn_screen(target, reader, out_tx.clone(), capture_stop.clone(), activity.clone(), epoch) {
@@ -783,8 +783,12 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
         let mins = args.idle_minutes;
         let (idle_app, idle_stop, idle_capture) = (app.clone(), stop_tx.clone(), capture_stop.clone());
         spawn_idle_watch(Duration::from_secs(mins as u64 * 60), capture_stop.clone(), activity, epoch, move || {
-            let what = if audio.is_empty() { "畫面沒有變化" } else { "沒有聲音" };
-            status(&idle_app, "paused", Some(format!("{mins} 分鐘{what}，已自動暫停以節省費用。")));
+            let why = if audio.is_empty() {
+                t!("{mins} 分鐘畫面沒有變化，已自動暫停以節省費用。", mins = mins)
+            } else {
+                t!("{mins} 分鐘沒有聲音，已自動暫停以節省費用。", mins = mins)
+            };
+            status(&idle_app, "paused", Some(why));
             idle_capture.store(true, Ordering::SeqCst);
             let _ = idle_stop.send(true);
         });
@@ -900,7 +904,12 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                             if backend == Backend::GeminiTranslate && fallback.is_some() =>
                         {
                             let next = fallback.take().unwrap();
-                            let why = format!("口譯模型 {model} 無法使用，改用 {next}。（{}）", live::explain_error(&r, &model));
+                            let why = t!(
+                                "口譯模型 {model} 無法使用，改用 {next}。（{reason}）",
+                                model = model,
+                                next = next,
+                                reason = live::explain_error(&r, &model)
+                            );
                             // Keep an earlier notice too, e.g. that the microphone was swapped for system audio.
                             let why = match notice.take() {
                                 Some(earlier) => format!("{earlier} {why}"),
@@ -958,7 +967,7 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
                             break;
                         }
                         Outcome::Reconnect => {
-                            status(&app, "error", Some("連線一直中斷，已停止。".into()));
+                            status(&app, "error", Some(t!("連線一直中斷，已停止。")));
                             break;
                         }
                     }

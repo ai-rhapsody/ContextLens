@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { followUp, openLink, searchWeb, type PhraseAction, type StreamEvent, type Task } from "./api";
 import { parseSections } from "./sections";
 import { Rich } from "./Rich";
+import { isKey, N_, t } from "./i18n";
 
 /** The section each task leads with, and the one "copy" takes. */
-export const LEAD: Record<Task, string> = { translate: "翻譯", explain: "說明", search: "這是什麼", custom: "" };
-export const QUERIES = "搜尋關鍵字";
-const MUTED = new Set(["原文", "內容"]);
+/** Answer headings (keyed `heading::`, as the backend asks for them). */
+export const LEAD: Record<Task, string> = {
+  translate: N_("heading::翻譯"), explain: N_("heading::說明"), search: N_("heading::這是什麼"), custom: "",
+};
+export const QUERIES = N_("heading::搜尋關鍵字");
+const MUTED = new Set([N_("heading::原文"), N_("heading::內容")]);
 
 export function host(url: string) {
   try {
@@ -27,15 +31,15 @@ export function Answer({ text, task, streaming }: { text: string; task: Task; st
       {sections.map((s, i) => (
         <section
           key={s.title ?? i}
-          className={`sec${s.title === LEAD[task] ? " lead" : ""}${s.title && MUTED.has(s.title) ? " orig" : ""}`}
+          className={`sec${isKey(s.title, LEAD[task]) ? " lead" : ""}${[...MUTED].some((k) => isKey(s.title, k)) ? " orig" : ""}`}
         >
           {s.title && <h2>{s.title}</h2>}
-          {s.title === QUERIES ? (
+          {isKey(s.title, QUERIES) ? (
             <div className="queries">
               {s.body.split("\n").map((l) => l.replace(/^\s*[-*•]\s*/, "").replace(/^["「]|["」]$/g, "").trim())
                 .filter(Boolean)
                 .map((q) => (
-                  <button key={q} className="chip" onClick={() => searchWeb(q)} title="用瀏覽器搜尋">{q} ↗</button>
+                  <button key={q} className="chip" onClick={() => searchWeb(q)} title={t("用瀏覽器搜尋")}>{q} ↗</button>
                 ))}
             </div>
           ) : (
@@ -51,7 +55,7 @@ export function Sources({ list }: { list: { title: string; url: string }[] }) {
   if (!list.length) return null;
   return (
     <section className="sec sources">
-      <h2>來源</h2>
+      <h2>{t("來源")}</h2>
       <ol>
         {list.map((s) => (
           <li key={s.url}>
@@ -124,12 +128,12 @@ export function Thread({ items, onRetry }: { items: Exchange[]; onRetry?: (i: nu
       {items.map((x, i) => (
         <div className="ex" key={i}>
           <p className="ex-q">{x.question}</p>
-          {x.state === "streaming" && !x.answer && <p className="ex-wait faint">思考中…</p>}
+          {x.state === "streaming" && !x.answer && <p className="ex-wait faint">{t("思考中…")}</p>}
           {x.answer && <div className="ex-a"><Answer text={x.answer} task="explain" streaming={x.state === "streaming"} /></div>}
           {x.state === "error" && (
             <div className="notice" role="alert">
               {x.error}
-              {x.ask && onRetry && <div><button className="btn" onClick={() => onRetry(i)}>重試</button></div>}
+              {x.ask && onRetry && <div><button className="btn" onClick={() => onRetry(i)}>{t("重試")}</button></div>}
             </div>
           )}
           <Sources list={x.sources} />
@@ -141,24 +145,25 @@ export function Thread({ items, onRetry }: { items: Exchange[]; onRetry?: (i: nu
 
 /** One-tap follow-ups that fit what was just done. */
 export const CHIPS: Record<Task, string[]> = {
-  translate: ["更口語", "更正式", "再給例句", "換個說法"],
-  explain: ["再簡單一點", "舉個例子", "整理成重點"],
-  search: ["比較其他選項", "價格與哪裡買"],
-  custom: ["更簡短", "再給一個版本", "說明改了什麼"],
+  translate: [N_("更口語"), N_("更正式"), N_("再給例句"), N_("換個說法")],
+  explain: [N_("再簡單一點"), N_("舉個例子"), N_("整理成重點")],
+  search: [N_("比較其他選項"), N_("價格與哪裡買")],
+  custom: [N_("更簡短"), N_("再給一個版本"), N_("說明改了什麼")],
 };
+/** Keyed by the untranslated chip label; the question is sent in the interface language. */
 const CHIP_QUESTION: Record<string, string> = {
-  更口語: "把譯文改得更口語、更自然。",
-  更正式: "把譯文改成更正式的書面語氣。",
-  再給例句: "再給三個用到同樣說法的例句，附上翻譯。",
-  換個說法: "原文還有哪些常見的說法？說明語氣差別。",
-  再簡單一點: "用更簡單的話再解釋一次，像對完全不懂的人說明。",
-  舉個例子: "舉一個具體的例子說明。",
-  整理成重點: "把上面的內容整理成三到五個重點。",
-  比較其他選項: "和類似的選項比較優缺點。",
-  價格與哪裡買: "大概的價格是多少？可以在哪裡買到或取得？",
-  更簡短: "再精簡一點，保留重點。",
-  再給一個版本: "換一種寫法再給一個版本。",
-  說明改了什麼: "說明你做了哪些修改，以及為什麼。",
+  更口語: N_("把譯文改得更口語、更自然。"),
+  更正式: N_("把譯文改成更正式的書面語氣。"),
+  再給例句: N_("再給三個用到同樣說法的例句，附上翻譯。"),
+  換個說法: N_("原文還有哪些常見的說法？說明語氣差別。"),
+  再簡單一點: N_("用更簡單的話再解釋一次，像對完全不懂的人說明。"),
+  舉個例子: N_("舉一個具體的例子說明。"),
+  整理成重點: N_("把上面的內容整理成三到五個重點。"),
+  比較其他選項: N_("和類似的選項比較優缺點。"),
+  價格與哪裡買: N_("大概的價格是多少？可以在哪裡買到或取得？"),
+  更簡短: N_("再精簡一點，保留重點。"),
+  再給一個版本: N_("換一種寫法再給一個版本。"),
+  說明改了什麼: N_("說明你做了哪些修改，以及為什麼。"),
 };
 
 export function FollowBar({ task, onAsk, busy, autoFocus = false }: {
@@ -175,15 +180,15 @@ export function FollowBar({ task, onAsk, busy, autoFocus = false }: {
     <div className="follow">
       <div className="follow-chips">
         {CHIPS[task].map((c) => (
-          <button key={c} className="chip sm" disabled={busy} onClick={() => onAsk({ question: CHIP_QUESTION[c] ?? c })}>{c}</button>
+          <button key={c} className="chip sm" disabled={busy} onClick={() => onAsk({ question: t(CHIP_QUESTION[c] ?? c) })}>{t(c)}</button>
         ))}
       </div>
       <form className="follow-input" onSubmit={(e) => { e.preventDefault(); send(); }}>
         <input
           className="field" value={text} onChange={(e) => setText(e.target.value)} autoFocus={autoFocus}
-          placeholder="追問這段內容…" aria-label="追問"
+          placeholder={t("追問這段內容…")} aria-label={t("追問")}
         />
-        <button className="btn primary" type="submit" disabled={busy || !text.trim()}>送出</button>
+        <button className="btn primary" type="submit" disabled={busy || !text.trim()}>{t("送出")}</button>
       </form>
     </div>
   );
@@ -257,21 +262,21 @@ export function SelectionMenu({ root, onAsk, busy }: {
   };
   return (
     <div
-      ref={menu} className="sel-menu" role="toolbar" aria-label="選取的文字"
+      ref={menu} className="sel-menu" role="toolbar" aria-label={t("選取的文字")}
       style={{ left: pick.x, top: pick.y }} onMouseDown={(e) => e.preventDefault()}
     >
-      <button disabled={busy} onClick={() => act("explain")}>解釋</button>
-      <button disabled={busy} onClick={() => act("examples")}>例句</button>
-      <button disabled={busy} onClick={() => act("rephrase")}>換個說法</button>
+      <button disabled={busy} onClick={() => act("explain")}>{t("解釋")}</button>
+      <button disabled={busy} onClick={() => act("examples")}>{t("例句")}</button>
+      <button disabled={busy} onClick={() => act("rephrase")}>{t("換個說法")}</button>
       <span className="sep" />
-      <button onClick={() => speak(pick.phrase)} title="用系統語音念出來">發音</button>
+      <button onClick={() => speak(pick.phrase)} title={t("用系統語音念出來")}>{t("發音")}</button>
       <button
         onClick={async () => {
           await navigator.clipboard.writeText(pick.phrase).catch(() => {});
           setCopied(true);
           setTimeout(() => setPick(null), 700);
         }}
-      >{copied ? "已複製" : "複製"}</button>
+      >{copied ? t("已複製") : t("複製")}</button>
     </div>
   );
 }
