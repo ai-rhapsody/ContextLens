@@ -71,7 +71,7 @@ export function Chat() {
               {kind === "video" && <video controls src={dataUrl(convo.media)} />}
             </div>
           )}
-          {!convo.media && convo.text && !parseSections(convo.answer).some((s) => isKey(s.title, "原文")) && (
+          {!convo.media && convo.text && !parseSections(convo.answer).some((s) => isKey(s.title, "heading::原文")) && (
             <p className={`src${openSrc ? " open" : ""}`} onClick={() => setOpenSrc((v) => !v)} title={t("點一下展開原文")}>
               {convo.text}
             </p>

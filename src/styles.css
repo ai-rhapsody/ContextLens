@@ -108,7 +108,7 @@ h1 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; margin: 0 
 .status-line { min-height: 20px; font-size: 13px; margin-top: 8px; }
 .status-line.err { color: var(--negative); }
 .status-line.ok { color: var(--positive); }
-.provider { display: grid; gap: 10px; padding: 14px var(--card-pad); }
+.provider { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 14px var(--card-pad); }
 .provider + .provider { border-top: 1px solid var(--rule); }
 .provider-head { display: flex; align-items: center; gap: 10px; }
 .provider-head label { display: flex; align-items: center; gap: 8px; font-weight: 500; cursor: pointer; }
@@ -384,3 +384,6 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 /* Row labels on the models page: two Chinese characters, or a word in other languages. */
 .mp-label { flex: none; width: 92px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 html:lang(zh-TW) .mp-label { width: 40px; }
+/* The hotkey's action list: two Chinese characters, or a longer word in other languages. */
+.hk-task { flex: none; width: 144px; }
+html:lang(zh-TW) .hk-task { width: 92px; }

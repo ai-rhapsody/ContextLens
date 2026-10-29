@@ -46,7 +46,7 @@ function Recorder({ value, onPick }: { value: string; onPick: (acc: string) => v
   }, [recording, onPick]);
 
   return (
-    <button className="btn" style={{ minWidth: 150 }} onClick={() => setRecording((r) => !r)} onBlur={() => setRecording(false)}>
+    <button className="btn" style={{ minWidth: 128 }} onClick={() => setRecording((r) => !r)} onBlur={() => setRecording(false)}>
       {recording ? t("按下新的組合鍵…") : <kbd>{prettyAccelerator(value)}</kbd>}
     </button>
   );
@@ -101,7 +101,7 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
                 </select>
                 {!isLive && (
                   <select
-                    className="field" value={h.task} aria-label={t("動作")} style={{ width: 92 }}
+                    className="field hk-task" value={h.task} aria-label={t("動作")}
                     onChange={(e) => {
                       const task = e.target.value as Task;
                       patch(h.id, task === "custom" ? { task, custom: h.custom ?? { name: "", instruction: "" } } : { task });

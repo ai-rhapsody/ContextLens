@@ -5,9 +5,12 @@ import { Rich } from "./Rich";
 import { isKey, N_, t } from "./i18n";
 
 /** The section each task leads with, and the one "copy" takes. */
-export const LEAD: Record<Task, string> = { translate: N_("翻譯"), explain: N_("說明"), search: N_("這是什麼"), custom: "" };
-export const QUERIES = N_("搜尋關鍵字");
-const MUTED = new Set([N_("原文"), N_("內容")]);
+/** Answer headings (keyed `heading::`, as the backend asks for them). */
+export const LEAD: Record<Task, string> = {
+  translate: N_("heading::翻譯"), explain: N_("heading::說明"), search: N_("heading::這是什麼"), custom: "",
+};
+export const QUERIES = N_("heading::搜尋關鍵字");
+const MUTED = new Set([N_("heading::原文"), N_("heading::內容")]);
 
 export function host(url: string) {
   try {

@@ -21,7 +21,7 @@ function when(ms: number): string {
 /** The line shown in the list: the translation, the explanation or the identification. */
 function translationOf(e: HistoryEntry): string {
   const s = parseSections(e.result + "\n");
-  return (s.find((x) => isKey(x.title, "翻譯")) ?? s.find((x) => isKey(x.title, "說明")) ?? s.find((x) => isKey(x.title, "這是什麼")))?.body
+  return (s.find((x) => isKey(x.title, "heading::翻譯")) ?? s.find((x) => isKey(x.title, "heading::說明")) ?? s.find((x) => isKey(x.title, "heading::這是什麼")))?.body
     ?? e.result;
 }
 

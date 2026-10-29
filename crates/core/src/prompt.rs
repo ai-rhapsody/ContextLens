@@ -12,18 +12,18 @@ pub enum Mode {
 
 /// Section headings. The popup splits the stream on `## ` lines, so these must stay
 /// in sync with `src/lib/sections.ts`.
-pub const H_ORIGINAL: &str = crate::n_!("原文");
-pub const H_TRANSLATION: &str = crate::n_!("翻譯");
-pub const H_STRUCTURE: &str = crate::n_!("結構");
-pub const H_USAGE: &str = crate::n_!("用法");
-pub const H_BACKGROUND: &str = crate::n_!("延伸知識");
-pub const H_CONTENT: &str = crate::n_!("內容");
-pub const H_EXPLAIN: &str = crate::n_!("說明");
-pub const H_POINTS: &str = crate::n_!("重點");
-pub const H_MORE: &str = crate::n_!("延伸");
-pub const H_WHAT: &str = crate::n_!("這是什麼");
-pub const H_FACTS: &str = crate::n_!("重點資訊");
-pub const H_QUERIES: &str = crate::n_!("搜尋關鍵字");
+pub const H_ORIGINAL: &str = crate::n_!("heading::原文");
+pub const H_TRANSLATION: &str = crate::n_!("heading::翻譯");
+pub const H_STRUCTURE: &str = crate::n_!("heading::結構");
+pub const H_USAGE: &str = crate::n_!("heading::用法");
+pub const H_BACKGROUND: &str = crate::n_!("heading::延伸知識");
+pub const H_CONTENT: &str = crate::n_!("heading::內容");
+pub const H_EXPLAIN: &str = crate::n_!("heading::說明");
+pub const H_POINTS: &str = crate::n_!("heading::重點");
+pub const H_MORE: &str = crate::n_!("heading::延伸");
+pub const H_WHAT: &str = crate::n_!("heading::這是什麼");
+pub const H_FACTS: &str = crate::n_!("heading::重點資訊");
+pub const H_QUERIES: &str = crate::n_!("heading::搜尋關鍵字");
 
 /// Longest text input we send, in characters.
 pub const MAX_INPUT_CHARS: usize = 8000;
@@ -425,7 +425,7 @@ mod tests {
     fn assert_in_order(s: &str, hs: &[&str]) {
         let mut at = 0;
         for h in hs {
-            let needle = format!("## {h}\n");
+            let needle = format!("## {}\n", crate::i18n::tr(h));
             let found = s[at..].find(&needle).unwrap_or_else(|| panic!("{needle} missing or out of order"));
             at += found + needle.len();
         }
@@ -444,14 +444,14 @@ mod tests {
     fn text_tutor_lists_its_headings_in_order() {
         let r = build(Mode::Tutor, "x", None, "繁體中文");
         assert_in_order(&r.system, &[H_TRANSLATION, H_STRUCTURE, H_USAGE, H_BACKGROUND]);
-        assert!(!r.system.contains(&format!("## {H_ORIGINAL}")));
+        assert!(!r.system.contains(&format!("## {}", crate::i18n::tr(H_ORIGINAL))));
     }
 
     #[test]
     fn media_prompts_start_with_the_original() {
         let t = build(Mode::Translate, "", Some(image()), "繁體中文");
         assert_in_order(&t.system, &[H_ORIGINAL, H_TRANSLATION]);
-        assert!(!t.system.contains(&format!("## {H_STRUCTURE}")));
+        assert!(!t.system.contains(&format!("## {}", crate::i18n::tr(H_STRUCTURE))));
         assert_eq!(t.media.len(), 1);
 
         let u = build(Mode::Tutor, "menu", Some(image()), "繁體中文");
@@ -465,7 +465,7 @@ mod tests {
         assert_in_order(&e.system, &[H_CONTENT, H_EXPLAIN, H_POINTS, H_MORE]);
         assert!(!e.web_search && e.media.len() == 1);
         let et = build_task(Task::Explain, false, "E = mc^2", None, "繁體中文", false);
-        assert!(!et.system.contains(&format!("## {H_CONTENT}")) && et.user.contains("E = mc^2"));
+        assert!(!et.system.contains(&format!("## {}", crate::i18n::tr(H_CONTENT))) && et.user.contains("E = mc^2"));
 
         let s = build_task(Task::Search, false, "", Some(image()), "繁體中文", true);
         assert_in_order(&s.system, &[H_WHAT, H_FACTS, H_QUERIES]);

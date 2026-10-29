@@ -38,11 +38,15 @@ const RS_CALL = /\b(?:t|n_)!\(\s*"((?:[^"\\]|\\.)*)"/g;
 export const tsFiles = () => files(join(ROOT, "src"), /\.tsx?$/);
 export const rsFiles = () => [...files(join(ROOT, "crates", "core", "src"), /\.rs$/), ...files(join(ROOT, "src-tauri", "src"), /\.rs$/)];
 
-/** Every key, sorted. */
+// Comments go first; string contents are kept, so a `//` inside a string survives as `"…//…"`.
+const noTsComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, "")).replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
+const noRsComments = (s: string) => s.replace(/(^|[^:"\\])\/\/.*$/gm, "$1");
+
+/** Every key, sorted. Examples in comments are not keys. */
 export function collectKeys(): string[] {
   const keys = new Set<string>();
-  for (const f of tsFiles()) for (const m of source(f).matchAll(TS_CALL)) keys.add(unescapeTs(m[1]));
-  for (const f of rsFiles()) for (const m of source(f).matchAll(RS_CALL)) keys.add(unescapeRust(m[1]));
+  for (const f of tsFiles()) for (const m of noTsComments(source(f)).matchAll(TS_CALL)) keys.add(unescapeTs(m[1]));
+  for (const f of rsFiles()) for (const m of noRsComments(source(f)).matchAll(RS_CALL)) keys.add(unescapeRust(m[1]));
   return [...keys].sort();
 }
 
@@ -61,9 +65,6 @@ export function untranslated(allowed: RegExp[]): string[] {
       if (CJK.test(line) && !allowed.some((a) => a.test(line))) found.push(`${f.slice(ROOT.length + 1)}:${i + 1}: ${line.trim()}`);
     });
   };
-  // Comments go first; string contents are kept, so a `//` inside a string survives as `"…//…"`.
-  const noTsComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, "")).replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
-  const noRsComments = (s: string) => s.replace(/(^|[^:"\\])\/\/.*$/gm, "$1");
   // Multi-line calls: remove the whole literal, continuation lines included.
   for (const f of tsFiles()) check(f, /\b(?:t\(|N_\(|variants\(|isKey\([^,()]*,)\s*"(?:[^"\\]|\\.)*"/g, noTsComments);
   for (const f of rsFiles()) check(f, /\b(?:t|n_)!\(\s*"(?:[^"\\]|\\[\s\S])*"/g, noRsComments);

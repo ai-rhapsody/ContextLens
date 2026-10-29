@@ -1451,7 +1451,7 @@ fn history_export(
         _ => (to_csv(&entries, |ms| diag::local_time(ms, tz_offset_min)), "csv"),
     };
     let date = &diag::local_time(now_ms(), tz_offset_min)[..10];
-    let what = if starred_only { t!("收藏") } else { t!("紀錄") };
+    let what = if starred_only { t!("file::收藏") } else { t!("file::紀錄") };
     let stem = format!("ContextLens {what}{} {date}", if ext == "txt" { " Anki" } else { "" });
     write_download(&app, &stem, ext, &body)
 }

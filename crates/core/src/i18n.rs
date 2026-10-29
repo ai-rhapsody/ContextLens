@@ -1,6 +1,8 @@
 //! Interface languages for messages built in Rust (errors, the tray menu, notices, prompts
 //! that follow the interface language). Keys are the Traditional Chinese text itself, as in
-//! the frontend, and the dictionaries are the frontend's own files in `src/locales`.
+//! the frontend, and the dictionaries are the frontend's own files in `src/locales`. A key
+//! can start with a context, `heading::翻譯`, when the same Chinese needs different words
+//! elsewhere; Chinese shows the text after `::`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -81,9 +83,17 @@ fn dict(l: Locale) -> Option<&'static HashMap<String, String>> {
     }
 }
 
-/// `key` (the Chinese text) in `l`, or the key itself when there is no translation.
+/// `key` (the Chinese text) in `l`, or the Chinese text itself when there is no translation.
 pub fn tr_in(l: Locale, key: &str) -> String {
-    dict(l).and_then(|d| d.get(key)).filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| key.to_string())
+    dict(l).and_then(|d| d.get(key)).filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| plain(key).to_string())
+}
+
+/// The Chinese text of a key, without its context.
+fn plain(key: &str) -> &str {
+    match key.split_once("::") {
+        Some((ctx, text)) if !ctx.is_empty() && ctx.chars().all(|c| c.is_ascii_lowercase()) => text,
+        _ => key,
+    }
 }
 
 /// `key` in the interface language.
@@ -147,5 +157,8 @@ mod tests {
         assert_eq!(tr_in(Locale::ZhTw, "翻譯"), "翻譯");
         assert_eq!(trf("{name} 測試", &[("name", "Gemini".into())]), "Gemini 測試");
         assert_eq!(tr_in(Locale::En, "a key no file has"), "a key no file has");
+        assert_eq!(tr_in(Locale::ZhTw, "heading::翻譯"), "翻譯");
+        assert_eq!(tr_in(Locale::En, "heading::翻譯"), "Translation");
+        assert_eq!(tr_in(Locale::En, "翻譯"), "Translate");
     }
 }
