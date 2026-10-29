@@ -1,12 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { inline } from "../lib/Rich";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { toSrt, toText, type Caption } from "../lib/captions";
 import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liveStar, liveStart, liveStop, PROVIDERS, showSettings,
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
 /** A caption line, or (with `divider`) the start of a later session. */
-type Turn = { input: string; output: string; starred?: boolean; divider?: string };
+type Turn = Caption & { starred?: boolean };
+
+/** Caption sizes the A−／A+ buttons step through; remembered on this computer. */
+const SCALES = [0.85, 1, 1.2, 1.45, 1.75];
+const SCALE_KEY = "lv-scale";
+function savedScale(): number {
+  try {
+    const v = Number(localStorage.getItem(SCALE_KEY));
+    return SCALES.includes(v) ? v : 1;
+  } catch {
+    return 1;
+  }
+}
 
 const STATE_LABEL: Record<State, string> = {
   idle: "未開始", connecting: "連線中…", listening: "聆聽中", reconnecting: "重新連線中…",
@@ -43,6 +57,7 @@ export function Live() {
   const [level, setLevel] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [scale, setScale] = useState(savedScale);
   const body = useRef<HTMLDivElement>(null);
   const cur = useRef<Turn>({ input: "", output: "" }); // mirrors `current` for the event handler
   const stick = useRef(true); // follow new captions unless the user scrolled up
@@ -61,7 +76,7 @@ export function Live() {
     // A session can end mid-line (the interpreter only ends a line when the next one starts):
     // keep that line with its own session instead of carrying it into the next.
     const settle = () => {
-      const done = cur.current;
+      const done = { ...cur.current, end: Date.now() };
       if (done.input.trim() || done.output.trim()) setTurns((t) => [...t.slice(-200), done]);
       cur.current = { input: "", output: "" };
       setCurrent(cur.current);
@@ -81,7 +96,7 @@ export function Live() {
         if (e.state === "listening") setStartedAt((t) => t ?? Date.now());
         if (e.state === "error" || e.state === "paused" || e.state === "stopped") setLevel(0);
       } else if (e.kind === "input" || e.kind === "output") {
-        cur.current = { ...cur.current, [e.kind]: cur.current[e.kind] + e.text };
+        cur.current = { ...cur.current, [e.kind]: cur.current[e.kind] + e.text, start: cur.current.start ?? Date.now() };
         setCurrent(cur.current);
       } else if (e.kind === "turn_complete") {
         settle();
@@ -192,8 +207,30 @@ export function Live() {
 
   const empty = !turns.length && !current.input && !current.output;
 
+  const resize = (step: number) => {
+    const next = SCALES[Math.min(SCALES.length - 1, Math.max(0, SCALES.indexOf(scale) + step))];
+    setScale(next);
+    try { localStorage.setItem(SCALE_KEY, String(next)); } catch { /* the size still applies until closed */ }
+  };
+
+  /** Saves the captions so far (and the line in progress) to the Downloads folder. */
+  const exportAs = async (ext: "txt" | "srt") => {
+    const all: Caption[] = current.input || current.output ? [...turns, { ...current, end: Date.now() }] : turns;
+    const content = ext === "srt" ? toSrt(all) : toText(all);
+    if (!content.trim()) return setMessage("還沒有可以匯出的字幕。");
+    const d = new Date();
+    const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+      + ` ${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+    try {
+      const path = await invoke<string>("save_captions", { stem: `ContextLens Live ${stamp}`, ext, content });
+      setMessage(`已匯出到 ${path}`);
+    } catch (e) {
+      setMessage(String(e));
+    }
+  };
+
   return (
-    <div className="live">
+    <div className="live" style={{ "--lv-scale": scale } as React.CSSProperties}>
       <div className="lv-head" data-tauri-drag-region>
         <span className={`lv-dot s-${state}`} aria-hidden />
         <span className="lv-state" data-tauri-drag-region>{STATE_LABEL[state]}</span>
@@ -261,6 +298,19 @@ export function Live() {
               ))}
             </select>
             {info.label && running && <span className="faint lv-label num">正在使用 {info.label}</span>}
+            <span className="grow" />
+            <span className="lv-size" role="group" aria-label="字幕大小">
+              <button className="btn quiet" onClick={() => resize(-1)} disabled={scale === SCALES[0]} title="字幕小一點">A−</button>
+              <button className="btn quiet" onClick={() => resize(1)} disabled={scale === SCALES[SCALES.length - 1]} title="字幕大一點">A+</button>
+            </span>
+            <select
+              className="field" value="" aria-label="匯出字幕" disabled={empty}
+              onChange={(e) => { const f = e.target.value as "txt" | "srt"; e.target.value = ""; if (f) exportAs(f); }}
+            >
+              <option value="" disabled>匯出…</option>
+              <option value="txt">文字檔（TXT）</option>
+              <option value="srt">字幕檔（SRT）</option>
+            </select>
           </div>
         )}
 

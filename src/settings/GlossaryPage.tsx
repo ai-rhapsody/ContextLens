@@ -11,7 +11,7 @@ export function GlossaryPage({ settings, commit }: { settings: Settings; commit:
     <>
       <h1>詞彙表</h1>
       <p className="lede">
-        固定專有名詞的譯法，例如歌名、人名、作品名。翻譯、解釋、搜尋、追問和 Live 都會照這裡的寫法。
+        固定專有名詞的譯法，例如歌名、人名、作品名。翻譯、解釋、搜尋、追問和 Live 都會照這裡的寫法。{""}
         只有內容裡出現的詞才會送出，不會拖慢翻譯。
       </p>
       <div className="panel glossary">
@@ -22,9 +22,9 @@ export function GlossaryPage({ settings, commit }: { settings: Settings; commit:
         )}
         {list.map((e, i) => (
           <div className="row gl-row" key={i}>
-            <TextField value={e.term} placeholder="SWIM" ariaLabel="原文" onCommit={(v) => patch(i, { term: v })} />
-            <TextField value={e.rendering} placeholder="SWIM" ariaLabel="譯為" onCommit={(v) => patch(i, { rendering: v })} />
-            <TextField value={e.note} placeholder="BTS 的歌名，不要翻譯" ariaLabel="說明" onCommit={(v) => patch(i, { note: v })} />
+            <TextField value={e.term} placeholder="例如 SWIM" ariaLabel="原文" onCommit={(v) => patch(i, { term: v })} />
+            <TextField value={e.rendering} placeholder="例如 SWIM" ariaLabel="譯為" onCommit={(v) => patch(i, { rendering: v })} />
+            <TextField value={e.note} placeholder="例如：BTS 的歌名" ariaLabel="說明" onCommit={(v) => patch(i, { note: v })} />
             <button className="btn quiet" aria-label="刪除" title="刪除" onClick={() => save(list.filter((_, j) => j !== i))}>✕</button>
           </div>
         ))}

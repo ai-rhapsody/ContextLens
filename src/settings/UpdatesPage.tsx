@@ -76,7 +76,7 @@ export function UpdatesPage({ state, setState }: { state: UpdateState; setState:
           <div className="grow">
             <div className="label">診斷資訊</div>
             <div className="hint">
-              版本、設定（不含金鑰）和最近的記錄。記錄檔只存在這台電腦上，不含你翻譯的內容，也不會自動上傳。
+              版本、設定（不含金鑰）和最近的記錄。記錄檔只存在這台電腦上，不含你翻譯的內容，也不會自動上傳。{""}
               回報問題時貼上，比較容易找出原因。
             </div>
             {copied && <div className="hint">{copied}</div>}

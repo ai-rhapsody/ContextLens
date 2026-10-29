@@ -1386,7 +1386,6 @@ fn history_export(
     tz_offset_min: i32,
 ) -> Result<String, String> {
     use contextlens_core::history::{to_anki, to_csv, MAX_ENTRIES};
-    use tauri_plugin_opener::OpenerExt;
     let mut entries = state.history.lock().unwrap().search(&query, MAX_ENTRIES);
     if starred_only {
         entries.retain(|e| e.starred);
@@ -1398,9 +1397,17 @@ fn history_export(
         "anki" => (to_anki(&entries), "txt"),
         _ => (to_csv(&entries, |ms| diag::local_time(ms, tz_offset_min)), "csv"),
     };
-    let dir = app.path().download_dir().or_else(|_| app.path().document_dir()).map_err(|e| e.to_string())?;
     let date = &diag::local_time(now_ms(), tz_offset_min)[..10];
     let stem = format!("ContextLens {}{} {date}", if starred_only { "收藏" } else { "紀錄" }, if ext == "txt" { " Anki" } else { "" });
+    write_download(&app, &stem, ext, &body)
+}
+
+/// Writes a file to the Downloads folder (Documents if there is none) under a name not yet
+/// taken, shows it in the file manager, and returns its path.
+fn write_download(app: &AppHandle, stem: &str, ext: &str, body: &str) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app.path().download_dir().or_else(|_| app.path().document_dir()).map_err(|e| e.to_string())?;
+    let stem: String = stem.chars().filter(|c| !"/\\:*?\"<>|".contains(*c)).collect();
     let mut path = dir.join(format!("{stem}.{ext}"));
     for n in 2.. {
         if !path.exists() {
@@ -1411,6 +1418,15 @@ fn history_export(
     std::fs::write(&path, body).map_err(|e| format!("無法寫入檔案：{e}"))?;
     let _ = app.opener().reveal_item_in_dir(&path);
     Ok(path.display().to_string())
+}
+
+/// Saves the Live captions as text or subtitles.
+#[tauri::command]
+fn save_captions(app: AppHandle, stem: String, ext: String, content: String) -> Result<String, String> {
+    if !matches!(ext.as_str(), "txt" | "srt") {
+        return Err("不支援這種檔案格式。".into());
+    }
+    write_download(&app, &stem, &ext, &content)
 }
 
 #[tauri::command]
@@ -1495,6 +1511,7 @@ pub fn run() {
             reveal_log,
             history_star,
             history_export,
+            save_captions,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

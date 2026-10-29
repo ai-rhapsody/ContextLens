@@ -79,7 +79,7 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
     <>
       <h1>熱鍵</h1>
       <p className="lede">
-        每個熱鍵決定從哪裡取得內容、要做什麼：翻譯、解釋、搜尋，或用「自訂」寫你自己的指令（例如潤飾英文 email）。
+        每個熱鍵決定從哪裡取得內容、要做什麼：翻譯、解釋、搜尋，或用「自訂」寫你自己的指令（例如潤飾英文 email）。{""}
         翻譯視窗裡也能隨時切換。點組合鍵按鈕後直接按下新的組合。
       </p>
       <div className="panel">
