@@ -51,7 +51,7 @@ export function Chat() {
 
   const kind = convo.media ? kindOf(convo.media.mime) : null;
   const provider = PROVIDERS.find((p) => p.id === convo.provider)?.name;
-  const taskLabel = TASKS.find((t) => t.id === convo.task)?.label;
+  const taskLabel = convo.task === "custom" ? convo.action?.name || "自訂" : TASKS.find((t) => t.id === convo.task)?.label;
 
   return (
     <div className="chat">

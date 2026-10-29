@@ -4,7 +4,7 @@
 use crate::media::Media;
 use crate::prompt;
 use crate::provider::{ChatRequest, Turn};
-use crate::settings::{Provider, Task};
+use crate::settings::{CustomAction, Provider, Task};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -25,6 +25,8 @@ pub struct Conversation {
     pub thread: Vec<(String, String)>,
     /// The media was not kept (an older conversation from history); follow-ups use text only.
     pub media_lost: bool,
+    /// For `Task::Custom`: the hotkey's instruction.
+    pub action: Option<CustomAction>,
 }
 
 /// Quick follow-ups for a selected phrase in an answer.
@@ -45,7 +47,10 @@ impl Conversation {
         } else {
             self.text.clone()
         };
-        let mut req = prompt::build_task(self.task, self.tutor, &text, media, target, web && self.task == Task::Search);
+        let mut req = match (&self.task, &self.action) {
+            (Task::Custom, Some(action)) => prompt::custom(action, &text, media, target),
+            _ => prompt::build_task(self.task, self.tutor, &text, media, target, web && self.task == Task::Search),
+        };
         req.system += &format!(
             "\n\nAfter your first answer the user may ask follow-up questions about it. Answer each one in {target}, \
              directly and briefly, in plain Markdown, without repeating the section headings unless asked."
@@ -79,7 +84,15 @@ mod tests {
             sources: vec![],
             thread: vec![("更口語？".into(), "超常發揮".into())],
             media_lost: false,
+            action: None,
         }
+    }
+
+    #[test]
+    fn follow_ups_keep_a_custom_instruction() {
+        let action = CustomAction { name: "潤飾".into(), instruction: "Polish this email".into() };
+        let c = Conversation { task: Task::Custom, action: Some(action), ..convo() };
+        assert!(c.follow_up("更短一點", "繁體中文", false).system.contains("Polish this email"));
     }
 
     #[test]

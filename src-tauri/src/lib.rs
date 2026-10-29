@@ -7,7 +7,7 @@ mod snip;
 mod store;
 
 use contextlens_core::{
-    caps, conversation, live::Backend, prompt, Caps, ChatRequest, Conversation, Delta, History, HistoryEntry,
+    caps, conversation, live::Backend, prompt, Caps, ChatRequest, Conversation, CustomAction, Delta, History, HistoryEntry,
     Hotkey, Media, Provider, Settings, Source, Task,
 };
 use std::collections::VecDeque;
@@ -32,6 +32,8 @@ struct Capture {
     media: Option<Media>,
     task: Task,
     tutor: bool,
+    /// The hotkey's own instruction, with `Task::Custom`.
+    custom: Option<CustomAction>,
     /// Set when capturing failed; the popup shows it instead of translating.
     error: Option<String>,
 }
@@ -493,8 +495,9 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 fn trigger(app: AppHandle, hotkey: Hotkey) {
     tauri::async_runtime::spawn(async move {
         let (tutor, task) = (hotkey.tutor, hotkey.task);
+        let custom = hotkey.custom.clone().filter(|_| task == Task::Custom);
         let preset = hotkey.live_sources.clone();
-        let failed = |message: String| Capture { tutor, task, error: Some(message), ..Default::default() };
+        let failed = |message: String| Capture { tutor, task, custom: custom.clone(), error: Some(message), ..Default::default() };
         match hotkey.source {
             Source::Selection => {
                 // Let the user's fingers leave the hotkey before we press Copy.
@@ -513,14 +516,14 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
                     (_, Err(e)) => format!("selection: none ({e})"),
                 });
                 let capture = match text {
-                    Ok(text) => Capture { text, tutor, task, ..Default::default() },
+                    Ok(text) => Capture { text, tutor, task, custom: custom.clone(), ..Default::default() },
                     Err(e) => failed(e),
                 };
                 show_popup_at(&app, capture, span);
             }
             Source::ClipboardImage => {
                 let capture = match blocking(capture::clipboard_image).await {
-                    Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
+                    Ok(media) => Capture { media: Some(media), tutor, task, custom: custom.clone(), ..Default::default() },
                     Err(e) => failed(e),
                 };
                 show_popup(&app, capture);
@@ -554,7 +557,8 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
             }
             Source::Screen => {
                 match blocking(move || snip::take(tutor, task, snip::Purpose::Translate)).await {
-                    Ok(s) => {
+                    Ok(mut s) => {
+                        s.custom = custom.clone();
                         if let Err(e) = start_snip(&app, s) {
                             show_popup(&app, failed(e));
                         }
@@ -780,10 +784,10 @@ async fn finish_snip(
         let _ = app.emit_to("live", "live-changed", ()); // the caption bar re-reads its state
         return Ok(());
     }
-    let (tutor, task) = (s.tutor, s.task);
+    let (tutor, task, custom) = (s.tutor, s.task, s.custom.clone());
     let capture = match blocking(move || snip::crop(&shot, rect)).await {
-        Ok(media) => Capture { media: Some(media), tutor, task, ..Default::default() },
-        Err(e) => Capture { tutor, task, error: Some(e), ..Default::default() },
+        Ok(media) => Capture { media: Some(media), tutor, task, custom, ..Default::default() },
+        Err(e) => Capture { tutor, task, custom, error: Some(e), ..Default::default() },
     };
     show_popup(&app, capture);
     Ok(())
@@ -864,8 +868,11 @@ async fn run_translation(
     tutor: bool,
     // Use another provider for this request only, e.g. when the default cannot read video.
     provider: Option<Provider>,
+    // The hotkey's own instruction, with `Task::Custom`.
+    action: Option<CustomAction>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
+    let action = action.filter(|a| task == Task::Custom && !a.instruction.trim().is_empty());
     let gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let (provider, model, lang, keep) = {
         let s = state.settings.lock().unwrap();
@@ -877,7 +884,10 @@ async fn run_translation(
         None => None,
     };
     let web = contextlens_core::can_search(provider, &model);
-    let mut req = prompt::build_task(task, tutor, &input.text, media, &lang, web);
+    let mut req = match &action {
+        Some(a) => prompt::custom(a, &input.text, media, &lang),
+        None => prompt::build_task(task, tutor, &input.text, media, &lang, web),
+    };
     let (to_english, glossary) = {
         let s = state.settings.lock().unwrap();
         (s.own_language_to_english, s.glossary.clone())
@@ -961,6 +971,7 @@ async fn run_translation(
                 sources: sources.clone(),
                 thread: vec![],
                 task: Some(task),
+                action: action.clone(),
             };
             let mut h = state.history.lock().unwrap();
             id = h.push_id(entry);
@@ -983,6 +994,7 @@ async fn run_translation(
                 sources,
                 thread: vec![],
                 media_lost: false,
+                action,
             },
         );
         let _ = on_event.send(StreamEvent::Conversation { id });
@@ -1029,6 +1041,7 @@ fn find_convo(state: &AppState, id: u64) -> Option<Conversation> {
         sources: e.sources.clone(),
         thread: e.thread.clone(),
         media_lost: media_kind,
+        action: e.action.clone(),
     })
 }
 
@@ -1155,6 +1168,7 @@ fn live_follow_up(app: AppHandle, state: State<AppState>, input: String, output:
             sources: vec![],
             thread: vec![],
             media_lost: false,
+            action: None,
         },
     );
     open_chat_window(&app, id);
@@ -1174,6 +1188,7 @@ fn live_line_entry(input: &str, output: &str, provider: Provider, model: &str) -
         sources: vec![],
         thread: vec![],
         task: Some(Task::Translate),
+        action: None,
     }
 }
 

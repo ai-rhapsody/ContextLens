@@ -55,6 +55,17 @@ pub enum Task {
     Explain,
     /// Identify it and look it up on the web.
     Search,
+    /// Do what the hotkey's own instruction says (`CustomAction`).
+    Custom,
+}
+
+/// A hotkey's own instruction, e.g. "polish this into a formal English email".
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct CustomAction {
+    /// Shown as the popup's tab, e.g. 潤飾英文.
+    pub name: String,
+    pub instruction: String,
 }
 
 /// What a Live session listens to or watches.
@@ -86,6 +97,8 @@ pub struct Hotkey {
     pub tutor: bool,
     /// For a Live hotkey: what to start with. Empty means whatever was used last.
     pub live_sources: Vec<LiveSource>,
+    /// With `Task::Custom`: what to do.
+    pub custom: Option<CustomAction>,
 }
 
 /// Accepts the current shape and the 0.1 shape (`action: translate_selection | tutor_selection`).
@@ -99,6 +112,8 @@ struct HotkeyWire {
     action: Option<String>,
     #[serde(default)]
     live_sources: Vec<LiveSource>,
+    #[serde(default)]
+    custom: Option<CustomAction>,
 }
 
 impl From<HotkeyWire> for Hotkey {
@@ -111,6 +126,7 @@ impl From<HotkeyWire> for Hotkey {
             task: w.task.unwrap_or_default(),
             tutor: w.tutor.unwrap_or(legacy_tutor),
             live_sources: w.live_sources,
+            custom: w.custom,
         }
     }
 }
@@ -215,6 +231,7 @@ impl Default for Settings {
             task: Task::Translate,
             tutor,
             live_sources: vec![],
+            custom: None,
         };
         Self {
             target_language: "繁體中文".into(),
@@ -274,6 +291,7 @@ impl Settings {
                     task: Task::Translate,
                     tutor: false,
                     live_sources: vec![],
+            custom: None,
                 });
             }
         }

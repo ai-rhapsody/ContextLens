@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   dataUrl, getSettings, hidePopup, modelForTask, openChat, providerInfo, PROVIDERS, runTranslation, setPopupPinned,
-  showSettings, takePendingCapture, TASKS, type Media, type Provider, type ProviderInfo, type Settings, type Task,
+  showSettings, takePendingCapture, TASKS, type CustomAction, type Media, type Provider, type ProviderInfo, type Settings, type Task,
 } from "../lib/api";
 import { fileToMedia, KIND_LABEL, kindOf } from "../lib/files";
 import { parseSections } from "../lib/sections";
@@ -39,6 +39,9 @@ export function Popup() {
   const [override, setOverride] = useState<Provider | null>(null); // this request only
   const [convo, setConvo] = useState<number | null>(null); // follow-ups go to this conversation
   const [fallback, setFallback] = useState<string | null>(null); // search answered without the web
+  const [custom, setCustom] = useState<CustomAction | null>(null); // the hotkey's own action, as a tab
+  const customRef = useRef<CustomAction | null>(null);
+  customRef.current = custom;
   const thread = useThread(convo);
   const bodyRef = useRef<HTMLDivElement>(null);
   useStickToBottom(bodyRef, thread.items);
@@ -87,6 +90,7 @@ export function Popup() {
     setExpanded(false);
     setStartedAt(Date.now());
     setShowSkeleton(false);
+    const action = asTask === "custom" ? customRef.current : null;
     runTranslation(next, asTask, asTutor, (e) => {
       if (id !== run.current) return;
       if (e.kind === "delta") setResult((r) => r + e.text);
@@ -95,7 +99,7 @@ export function Popup() {
       else if (e.kind === "offline") { setFallback(e.reason); setResult(""); }
       else if (e.kind === "done") setStatus("done");
       else if (e.kind === "error") fail(e.message);
-    }, via).catch((err) => id === run.current && fail(String(err)));
+    }, via, action).catch((err) => id === run.current && fail(String(err)));
   }, [fail, thread.reset]);
 
   const pickUp = useCallback(async () => {
@@ -108,6 +112,8 @@ export function Popup() {
     setKept(false); // a fresh capture is a fresh peek
     setTutor(cap.tutor);
     setTask(cap.task);
+    setCustom(cap.custom);
+    customRef.current = cap.custom;
     if (cap.error) {
       setInput(null);
       setResult("");
@@ -236,6 +242,11 @@ export function Popup() {
               {t.label}
             </button>
           ))}
+          {custom && (
+            <button role="tab" aria-selected={task === "custom"} title={custom.instruction} onClick={() => switchTask("custom")}>
+              {custom.name || "自訂"}
+            </button>
+          )}
         </div>
         <span className="grow" data-tauri-drag-region />
         {task === "translate" && (
@@ -378,7 +389,7 @@ export function Popup() {
       {status === "done" && convo !== null && (
         <SelectionMenu root={bodyRef} busy={thread.busy} onAsk={(a) => { setKept(true); thread.ask(a); }} />
       )}
-      {dragging && <div className="drop-veil">放開以{TASKS.find((t) => t.id === task)?.label}</div>}
+      {dragging && <div className="drop-veil">放開以{task === "custom" ? custom?.name || "自訂動作" : TASKS.find((t) => t.id === task)?.label}</div>}
     </div>
   );
 }

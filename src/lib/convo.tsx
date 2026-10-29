@@ -4,7 +4,7 @@ import { parseSections } from "./sections";
 import { Rich } from "./Rich";
 
 /** The section each task leads with, and the one "copy" takes. */
-export const LEAD: Record<Task, string> = { translate: "翻譯", explain: "說明", search: "這是什麼" };
+export const LEAD: Record<Task, string> = { translate: "翻譯", explain: "說明", search: "這是什麼", custom: "" };
 export const QUERIES = "搜尋關鍵字";
 const MUTED = new Set(["原文", "內容"]);
 
@@ -144,6 +144,7 @@ export const CHIPS: Record<Task, string[]> = {
   translate: ["更口語", "更正式", "再給例句", "換個說法"],
   explain: ["再簡單一點", "舉個例子", "整理成重點"],
   search: ["比較其他選項", "價格與哪裡買"],
+  custom: ["更簡短", "再給一個版本", "說明改了什麼"],
 };
 const CHIP_QUESTION: Record<string, string> = {
   更口語: "把譯文改得更口語、更自然。",
@@ -155,6 +156,9 @@ const CHIP_QUESTION: Record<string, string> = {
   整理成重點: "把上面的內容整理成三到五個重點。",
   比較其他選項: "和類似的選項比較優缺點。",
   價格與哪裡買: "大概的價格是多少？可以在哪裡買到或取得？",
+  更簡短: "再精簡一點，保留重點。",
+  再給一個版本: "換一種寫法再給一個版本。",
+  說明改了什麼: "說明你做了哪些修改，以及為什麼。",
 };
 
 export function FollowBar({ task, onAsk, busy, autoFocus = false }: {

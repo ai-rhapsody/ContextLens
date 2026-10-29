@@ -2,8 +2,12 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Provider = "gemini" | "openai" | "anthropic";
 export type Source = "selection" | "screen" | "clipboard_image" | "live";
-export type Task = "translate" | "explain" | "search";
+export type Task = "translate" | "explain" | "search" | "custom";
 
+/** A hotkey's own instruction, e.g. "polish this into a formal English email". */
+export interface CustomAction { name: string; instruction: string }
+
+/** The built-in tasks; a hotkey's custom action adds its own tab. */
 export const TASKS: { id: Task; label: string; hint: string }[] = [
   { id: "translate", label: "翻譯", hint: "辨識文字並翻譯" },
   { id: "explain", label: "解釋", hint: "說明內容：圖表、示意圖、迷因、程式碼、題目" },
@@ -19,6 +23,8 @@ export interface Hotkey {
   tutor: boolean;
   /** Live hotkeys: what to start with; empty means what was used last. */
   live_sources?: LiveSource[];
+  /** With task "custom": what to do. */
+  custom?: CustomAction | null;
 }
 
 /** A fixed rendering for a name or term, e.g. a song title. */
@@ -59,6 +65,7 @@ export interface Capture {
   media: Media | null;
   task: Task;
   tutor: boolean;
+  custom: CustomAction | null;
   error: string | null;
 }
 
@@ -149,10 +156,11 @@ export function runTranslation(
   tutor: boolean,
   onEvent: (e: StreamEvent) => void,
   provider: Provider | null = null,
+  action: CustomAction | null = null,
 ) {
   const channel = new Channel<StreamEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>("run_translation", { input, task, tutor, provider, onEvent: channel });
+  return invoke<void>("run_translation", { input, task, tutor, provider, action, onEvent: channel });
 }
 
 export const dataUrl = (m: Media) => `data:${m.mime};base64,${m.data_b64}`;
@@ -215,6 +223,7 @@ export interface Conversation {
   sources: [string, string][];
   thread: [string, string][];
   media_lost: boolean;
+  action: CustomAction | null;
 }
 
 /** What a selected phrase in an answer can be asked about. */

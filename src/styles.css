@@ -375,3 +375,5 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .glossary .gl-head { min-height: 0; padding-bottom: 0; font-size: 12px; color: var(--muted); }
 .glossary .gl-head + .row { border-top: 0; }
 .glossary .gl-row .field { width: 100%; min-width: 0; }
+.hk-custom .hk-name { width: 120px; flex: none; }
+.hk-custom .grow { flex: 1; min-width: 0; }

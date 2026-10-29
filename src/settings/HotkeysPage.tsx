@@ -4,6 +4,15 @@ import {
   type Task,
 } from "../lib/api";
 import { eventToAccelerator, prettyAccelerator } from "../lib/hotkey";
+import { TextField } from "./TextField";
+
+/** Ready-made custom actions to start from. */
+const EXAMPLES: { name: string; instruction: string }[] = [
+  { name: "潤飾英文", instruction: "把內容潤飾成自然、正式的英文 email，保留原意。" },
+  { name: "摘要", instruction: "把內容摘要成三到五個重點。" },
+  { name: "解釋程式碼", instruction: "逐段解釋這段程式碼在做什麼，指出可能的問題。" },
+  { name: "改成口語", instruction: "把內容改寫成輕鬆、口語的說法，語言不變。" },
+];
 
 const SOURCES: { id: Source; label: string; needsImage: boolean }[] = [
   { id: "screen", label: "截圖", needsImage: true },
@@ -70,7 +79,8 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
     <>
       <h1>熱鍵</h1>
       <p className="lede">
-        每個熱鍵決定從哪裡取得內容、要做什麼：翻譯、解釋或搜尋。翻譯視窗裡也能隨時切換。點組合鍵按鈕後直接按下新的組合。
+        每個熱鍵決定從哪裡取得內容、要做什麼：翻譯、解釋、搜尋，或用「自訂」寫你自己的指令（例如潤飾英文 email）。
+        翻譯視窗裡也能隨時切換。點組合鍵按鈕後直接按下新的組合。
       </p>
       <div className="panel">
         {settings.hotkeys.length === 0 && <div className="empty">還沒有熱鍵。新增一個開始使用。</div>}
@@ -92,9 +102,13 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
                 {!isLive && (
                   <select
                     className="field" value={h.task} aria-label="動作" style={{ width: 92 }}
-                    onChange={(e) => patch(h.id, { task: e.target.value as Task })}
+                    onChange={(e) => {
+                      const task = e.target.value as Task;
+                      patch(h.id, task === "custom" ? { task, custom: h.custom ?? { name: "", instruction: "" } } : { task });
+                    }}
                   >
                     {TASKS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                    <option value="custom">自訂…</option>
                   </select>
                 )}
                 <label className="inline-switch" style={{ visibility: isLive || h.task === "translate" ? "visible" : "hidden" }}>
@@ -110,6 +124,28 @@ export function HotkeysPage(props: { settings: Settings; commit: (s: Settings) =
                   onClick={() => commit({ ...settings, hotkeys: settings.hotkeys.filter((x) => x.id !== h.id) })}
                 >刪除</button>
               </div>
+              {!isLive && h.task === "custom" && (
+                <div className="row hk-live hk-custom">
+                  <TextField
+                    className="hk-name" value={h.custom?.name ?? ""} placeholder="名稱" ariaLabel="自訂動作名稱"
+                    onCommit={(v) => patch(h.id, { custom: { name: v, instruction: h.custom?.instruction ?? "" } })}
+                  />
+                  <TextField
+                    className="grow" value={h.custom?.instruction ?? ""} placeholder="要做什麼，例如：把內容潤飾成正式的英文 email"
+                    ariaLabel="自訂指令"
+                    onCommit={(v) => patch(h.id, { custom: { name: h.custom?.name ?? "", instruction: v } })}
+                  />
+                </div>
+              )}
+              {!isLive && h.task === "custom" && !h.custom?.instruction && (
+                <div className="row hk-live">
+                  <span className="hint">範例：</span>
+                  {EXAMPLES.map((x) => (
+                    <button key={x.name} className="chip sm" onClick={() => patch(h.id, { custom: x })}>{x.name}</button>
+                  ))}
+                  <span className="hint grow">還沒寫指令時，按下會改用「解釋」。</span>
+                </div>
+              )}
               {isLive && (
                 <div className="row hk-live">
                   <span className="hint">按下時開啟</span>

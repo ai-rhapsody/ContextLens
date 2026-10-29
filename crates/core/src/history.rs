@@ -26,9 +26,12 @@ pub struct HistoryEntry {
     /// Follow-up questions and their answers, in order.
     #[serde(default)]
     pub thread: Vec<(String, String)>,
-    /// What was asked for: `translate`, `explain` or `search`.
+    /// What was asked for: `translate`, `explain`, `search` or `custom`.
     #[serde(default)]
     pub task: Option<crate::settings::Task>,
+    /// For `custom`: the hotkey's instruction, so follow-ups keep it.
+    #[serde(default)]
+    pub action: Option<crate::settings::CustomAction>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -121,6 +124,7 @@ mod tests {
             sources: vec![],
             thread: vec![],
             task: None,
+            action: None,
         }
     }
 
