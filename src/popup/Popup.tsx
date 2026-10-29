@@ -341,7 +341,7 @@ export function Popup() {
 
         {status === "done" && convo !== null && (
           <>
-            <Thread items={thread.items} />
+            <Thread items={thread.items} onRetry={thread.retry} />
             <FollowBar task={task} busy={thread.busy} onAsk={(a) => { setKept(true); thread.ask(a); }} />
           </>
         )}

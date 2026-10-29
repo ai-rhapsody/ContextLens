@@ -143,6 +143,7 @@ fn emit(app: &AppHandle, e: LiveUi) {
 }
 
 fn status(app: &AppHandle, state: &'static str, message: Option<String>) {
+    crate::diag::log(&format!("live: {state}{}", message.as_deref().map(|m| format!(" ({m})")).unwrap_or_default()));
     emit(app, LiveUi::Status { state, message });
 }
 
@@ -789,6 +790,12 @@ pub fn start(app: AppHandle, args: StartArgs) -> Result<LiveHandle, String> {
         args.engine.provider().display_name(),
         args.engine.model()
     )));
+    crate::diag::log(&format!(
+        "live: start {} · sources {:?}, notes {}",
+        label.lock().unwrap(),
+        args.sources,
+        if args.tutor { "on" } else { "off" }
+    ));
     let handle = LiveHandle {
         id,
         stop: stop_tx,

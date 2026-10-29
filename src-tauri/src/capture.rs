@@ -60,7 +60,7 @@ pub fn selected_text() -> Result<String, String> {
     }
     #[cfg(target_os = "macos")]
     mac::ensure_accessibility()?;
-    let previous = clipboard.get_text().ok();
+    let previous = Saved::take(&mut clipboard);
 
     let mark = sentinel();
     clipboard.set_text(mark.clone()).map_err(|e| format!("無法寫入剪貼簿：{e}"))?;
@@ -82,14 +82,7 @@ pub fn selected_text() -> Result<String, String> {
         }
     }
 
-    match previous {
-        Some(old) => {
-            let _ = clipboard.set_text(old);
-        }
-        None => {
-            let _ = clipboard.clear();
-        }
-    }
+    previous.restore(&mut clipboard);
 
     match grabbed {
         Some(t) if !t.trim().is_empty() => Ok(t),
@@ -222,6 +215,49 @@ mod uia {
         }
         let _ = SafeArrayDestroy(array);
         out
+    }
+}
+
+/// What was on the clipboard before Copy, put back afterwards so a screenshot or copied files
+/// survive the hotkey. The richest form is kept: files, an image, formatted text, plain text.
+enum Saved {
+    Files(Vec<std::path::PathBuf>),
+    Image(arboard::ImageData<'static>),
+    Html { html: String, text: Option<String> },
+    Text(String),
+    Nothing,
+}
+
+impl Saved {
+    fn take(clipboard: &mut Clipboard) -> Saved {
+        if let Ok(files) = clipboard.get().file_list() {
+            if !files.is_empty() {
+                return Saved::Files(files);
+            }
+        }
+        if let Ok(image) = clipboard.get_image() {
+            return Saved::Image(image);
+        }
+        let text = clipboard.get_text().ok();
+        if let Ok(html) = clipboard.get().html() {
+            if !html.trim().is_empty() {
+                return Saved::Html { html, text };
+            }
+        }
+        text.map_or(Saved::Nothing, Saved::Text)
+    }
+
+    fn restore(self, clipboard: &mut Clipboard) {
+        let put = match self {
+            Saved::Files(files) => clipboard.set().file_list(&files),
+            Saved::Image(image) => clipboard.set_image(image),
+            Saved::Html { html, text } => clipboard.set_html(html, text),
+            Saved::Text(text) => clipboard.set_text(text),
+            Saved::Nothing => clipboard.clear(),
+        };
+        if let Err(e) = put {
+            crate::diag::log(&format!("clipboard: could not restore what was there ({e})"));
+        }
     }
 }
 

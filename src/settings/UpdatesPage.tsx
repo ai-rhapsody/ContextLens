@@ -1,13 +1,25 @@
 import { useEffect, useState } from "react";
-import { openLink } from "../lib/api";
+import { diagnostics, openLink, revealLog } from "../lib/api";
 import { checkForUpdate, currentVersion, installUpdate, restartApp, type UpdateState } from "../lib/updater";
 
 const REPO_URL = "https://github.com/ai-rhapsody/ContextLens";
 const PRIVACY_URL = `${REPO_URL}/blob/main/PRIVACY.md`;
+const ISSUES_URL = `${REPO_URL}/issues`;
+const KOFI_URL = "https://ko-fi.com/airhapsody";
 
 export function UpdatesPage({ state, setState }: { state: UpdateState; setState: (s: UpdateState) => void }) {
   const [version, setVersion] = useState("");
+  const [copied, setCopied] = useState<string | null>(null);
   useEffect(() => { currentVersion().then(setVersion); }, []);
+
+  const copyDiagnostics = async () => {
+    try {
+      await navigator.clipboard.writeText(await diagnostics());
+      setCopied("已複製，可以貼到回報裡。");
+    } catch (e) {
+      setCopied(`無法複製：${e}`);
+    }
+  };
 
   const check = async () => {
     setState({ phase: "checking" });
@@ -57,6 +69,35 @@ export function UpdatesPage({ state, setState }: { state: UpdateState; setState:
         )}
 
         {state.phase === "error" && <div className="row"><span className="status-line err" style={{ margin: 0 }}>無法更新：{state.message}</span></div>}
+      </div>
+      <h2 className="group">回報問題與支持</h2>
+      <div className="panel">
+        <div className="row">
+          <div className="grow">
+            <div className="label">診斷資訊</div>
+            <div className="hint">
+              版本、設定（不含金鑰）和最近的記錄。記錄檔只存在這台電腦上，不含你翻譯的內容，也不會自動上傳。
+              回報問題時貼上，比較容易找出原因。
+            </div>
+            {copied && <div className="hint">{copied}</div>}
+          </div>
+          <button className="btn quiet" onClick={() => revealLog().catch((e) => setCopied(String(e)))}>開啟記錄檔</button>
+          <button className="btn" onClick={copyDiagnostics}>複製診斷資訊</button>
+        </div>
+        <div className="row">
+          <div className="grow">
+            <div className="label">回報問題</div>
+            <div className="hint">在 GitHub 開一則 issue，附上診斷資訊和發生的步驟。</div>
+          </div>
+          <button className="btn" onClick={() => openLink(ISSUES_URL)}>回報問題</button>
+        </div>
+        <div className="row">
+          <div className="grow">
+            <div className="label">支持開發</div>
+            <div className="hint">ContextLens 免費、開源，沒有廣告。覺得好用的話，歡迎到 Ko-fi 請我喝杯咖啡。</div>
+          </div>
+          <button className="btn" onClick={() => openLink(KOFI_URL)}>Ko-fi ☕</button>
+        </div>
       </div>
       <p className="hint about">
         檢查更新會連到 GitHub。ContextLens 不收集使用統計，你的內容只送到你設定的 AI 服務。{" "}

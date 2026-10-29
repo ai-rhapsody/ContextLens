@@ -1,4 +1,5 @@
 mod capture;
+mod diag;
 mod imaging;
 mod live;
 mod secrets;
@@ -331,6 +332,7 @@ fn open_live_window(app: &AppHandle) {
 }
 
 fn live_status(app: &AppHandle, state: &'static str, message: Option<String>) {
+    diag::log(&format!("live: {state}{}", message.as_deref().map(|m| format!(" ({m})")).unwrap_or_default()));
     let _ = app.emit_to("live", "live", live::LiveUi::Status { state, message });
 }
 
@@ -504,6 +506,11 @@ fn trigger(app: AppHandle, hotkey: Hotkey) {
                 })
                 .await;
                 let (span, text) = read.unwrap_or_else(|e| (None, Err(e)));
+                diag::log(&match (&span, &text) {
+                    (Some(s), Ok(t)) => format!("selection: {} chars, on screen at y {:.0}..{:.0}", t.chars().count(), s.top, s.bottom),
+                    (None, Ok(t)) => format!("selection: {} chars, position unknown (popup follows the cursor)", t.chars().count()),
+                    (_, Err(e)) => format!("selection: none ({e})"),
+                });
                 let capture = match text {
                     Ok(text) => Capture { text, tutor, task, ..Default::default() },
                     Err(e) => failed(e),
@@ -610,6 +617,42 @@ async fn delete_api_key(args: KeyArgs) -> Result<(), String> {
 }
 
 /// Which providers have a key stored. The keys themselves never leave Rust.
+/// What a problem report needs: versions, the settings that matter (no keys), and the recent log.
+#[tauri::command]
+fn diagnostics(state: State<AppState>) -> String {
+    let s = state.settings.lock().unwrap().clone();
+    let keys: Vec<String> = Provider::ALL
+        .iter()
+        .map(|p| format!("{} {}", p.display_name(), if secrets::get(*p).is_some() { "有" } else { "無" }))
+        .collect();
+    let m = &s.models;
+    let mut out = vec![
+        format!("ContextLens {} · {} {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH),
+        format!("目標語言：{} · 預設服務：{} · 金鑰：{}", s.target_language, s.provider.display_name(), keys.join("、")),
+        format!(
+            "模型：Gemini {} / {} · ChatGPT {} / {} · Claude {} / {}",
+            m.gemini, m.gemini_explain, m.openai, m.openai_explain, m.anthropic, m.anthropic_explain
+        ),
+        format!("Live：{} / {} / 口譯 {} · 來源 {:?}", m.gemini_live, m.openai_realtime, m.gemini_translate, s.live_sources),
+        format!("已是我的語言時翻成英文：{}", if s.own_language_to_english { "開" } else { "關" }),
+        String::new(),
+        "最近的記錄：".into(),
+    ];
+    out.extend(diag::tail(150));
+    out.join("\n")
+}
+
+/// Shows the log file in the system's file manager.
+#[tauri::command]
+fn reveal_log(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = diag::path().ok_or("記錄檔還沒建立")?;
+    if !path.exists() {
+        diag::log("log opened");
+    }
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn key_status() -> Vec<(Provider, bool)> {
     Provider::ALL.iter().map(|p| (*p, secrets::get(*p).is_some())).collect()
@@ -788,10 +831,21 @@ async fn stream_raw(
             provider.display_name()
         ))
     })?;
-    contextlens_core::stream_completion(&state.http, provider, model, &key, req, |t| {
+    let mut sources = 0;
+    let result = contextlens_core::stream_completion(&state.http, provider, model, &key, req, |t| {
+        if matches!(t, Delta::Source { .. }) {
+            sources += 1;
+        }
         gen.map_or(true, |g| state.generation.load(Ordering::SeqCst) == g) && emit(t)
     })
-    .await
+    .await;
+    let what = format!("{} {model}{}", provider.id(), if req.web_search { " (web search)" } else { "" });
+    match &result {
+        Err(e) => diag::log(&format!("request failed: {what}: {e}")),
+        Ok(()) if req.web_search => diag::log(&format!("request done: {what}, {sources} sources")),
+        Ok(()) => {}
+    }
+    result
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -1000,14 +1054,23 @@ async fn follow_up(
     let _ = on_event.send(StreamEvent::Question { text: question.clone() });
 
     let mut answer = String::new();
-    let result = stream(&state, convo.provider, &convo.model, &req, None, |d| match d {
-        Delta::Text(t) => {
-            answer.push_str(&t);
-            on_event.send(StreamEvent::Delta { text: t }).is_ok()
+    // A busy server usually answers a moment later: one more try before any text arrived.
+    let mut retried = false;
+    let result = loop {
+        let r = stream_raw(&state, convo.provider, &convo.model, &req, None, |d| match d {
+            Delta::Text(t) => {
+                answer.push_str(&t);
+                on_event.send(StreamEvent::Delta { text: t }).is_ok()
+            }
+            Delta::Source { title, url } => on_event.send(StreamEvent::Source { title, url }).is_ok(),
+        })
+        .await;
+        if retried || !answer.is_empty() || !r.as_ref().is_err_and(|e| e.is_transient()) {
+            break r.map_err(|e| e.to_string());
         }
-        Delta::Source { title, url } => on_event.send(StreamEvent::Source { title, url }).is_ok(),
-    })
-    .await;
+        retried = true;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    };
     if result.is_ok() && !answer.trim().is_empty() {
         let mut updated = convo;
         updated.thread.push((question.clone(), answer.clone()));
@@ -1348,9 +1411,14 @@ pub fn run() {
             chat_pending,
             live_follow_up,
             live_star,
+            diagnostics,
+            reveal_log,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            if let Ok(dir) = handle.path().app_log_dir() {
+                diag::init(dir);
+            }
             let settings = store::load(&handle);
             app.manage(AppState {
                 settings: Mutex::new(settings.clone()),
@@ -1371,7 +1439,7 @@ pub fn run() {
                 http: contextlens_core::http_client(),
             });
             if let Err(e) = register_hotkeys(&handle, &settings) {
-                eprintln!("hotkeys: {e}");
+                diag::log(&format!("hotkeys: {e}"));
             }
 
             // Windows are declared with `create: false` and built only now, after the state

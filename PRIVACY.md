@@ -1,6 +1,6 @@
 # ContextLens 隱私政策
 
-最後更新：2026 年 10 月 28 日
+最後更新：2026 年 10 月 29 日
 
 ContextLens 是在你電腦上執行的桌面程式。它沒有自己的伺服器、不需要帳號，也不收集使用統計或當機報告。開發者收不到你的任何資料。
 
@@ -11,6 +11,7 @@ ContextLens 是在你電腦上執行的桌面程式。它沒有自己的伺服�
 | API 金鑰 | 作業系統的鑰匙圈（Windows 認證管理員、macOS 鑰匙圈、Linux Secret Service），不會寫進設定檔，也不會傳給程式的畫面 |
 | 設定 | 使用者設定資料夾裡的 `settings.json` |
 | 歷史紀錄（可關閉） | 使用者資料資料夾裡的 `history.json`，最多 1000 筆，包含原文、結果、圖片縮圖和追問內容 |
+| 記錄檔 | 使用者記錄資料夾裡的 `contextlens.log`（最多約 1 MB），記錄版本、錯誤訊息和連線狀態，不含你選取或翻譯的內容，也不含金鑰。只有你在「更新」頁按「複製診斷資訊」、自己貼出去時，別人才看得到 |
 
 在「一般」頁可以關閉歷史紀錄，在「歷史紀錄」頁可以刪除單筆或全部。解除安裝並刪除上述資料夾，就會移除所有資料；金鑰可以先在「模型與金鑰」頁移除。
 
@@ -50,6 +51,6 @@ ContextLens 是在你電腦上執行的桌面程式。它沒有自己的伺服�
 
 ContextLens runs on your computer. It has no servers, no accounts, no telemetry and no crash reporting; the developers receive none of your data.
 
-- **Stored locally:** API keys in the OS keychain; settings and (optional) history in your user folders. You can turn history off and delete it in the app.
+- **Stored locally:** API keys in the OS keychain; settings and (optional) history in your user folders. You can turn history off and delete it in the app. A small log of versions, errors and connection states (never your content or keys) stays on your computer unless you copy it into a report yourself.
 - **Sent out, only when you act:** the selected text, the screen region you pick, files you add, follow-up questions, and, while Live runs, the microphone, system audio and screen region you chose. All of it goes straight to the AI provider you configured (Google Gemini, OpenAI or Anthropic) with your own API key, under that provider's terms.
 - **Other connections:** an update check to GitHub at each start (`latest.json`) and the update download when you install one; links you click open in your browser.
