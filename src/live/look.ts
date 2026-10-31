@@ -4,8 +4,10 @@ import { N_ } from "../lib/i18n";
 export type Look = {
   /** Caption size, as a multiple of the normal size. */
   scale: number;
-  /** Background opacity in percent: 100 is the normal bar, 0 leaves only the text over the screen. */
+  /** Background opacity in percent in the normal bar: 100 is solid, 0 leaves only the text over the screen. */
   bg: number;
+  /** The same in subtitle mode, kept apart so switching modes brings back each one's look. */
+  subBg: number;
   /** The translation's colour: "auto", or a `#rrggbb` colour. */
   color: string;
   /** Only the latest captions, centred at the bottom; the controls show while the mouse is over the bar. */
@@ -25,7 +27,7 @@ export const COLORS: { id: string; label: string }[] = [
   { id: "#7dff8a", label: N_("綠") },
 ];
 
-export const DEFAULT_LOOK: Look = { scale: 1, bg: 100, color: "auto", subtitle: false, original: true };
+export const DEFAULT_LOOK: Look = { scale: 1, bg: 100, subBg: 0, color: "auto", subtitle: false, original: true };
 
 const KEY = "lv-look";
 /** Where earlier versions kept only the caption size. */
@@ -40,10 +42,14 @@ export function parseLook(saved: string | null, oldScale: string | null = null):
     // A damaged value: start over.
   }
   const scale = Number(raw.scale ?? oldScale);
-  const bg = Number(raw.bg);
+  const percent = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return v !== undefined && v !== null && Number.isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : fallback;
+  };
   return {
     scale: SCALES.includes(scale) ? scale : DEFAULT_LOOK.scale,
-    bg: Number.isFinite(bg) ? Math.min(100, Math.max(0, Math.round(bg))) : DEFAULT_LOOK.bg,
+    bg: percent(raw.bg, DEFAULT_LOOK.bg),
+    subBg: percent(raw.subBg, DEFAULT_LOOK.subBg),
     color: typeof raw.color === "string" && /^(auto|#[0-9a-f]{6})$/i.test(raw.color) ? raw.color : DEFAULT_LOOK.color,
     subtitle: typeof raw.subtitle === "boolean" ? raw.subtitle : DEFAULT_LOOK.subtitle,
     original: typeof raw.original === "boolean" ? raw.original : DEFAULT_LOOK.original,
@@ -66,8 +72,19 @@ export function saveLook(look: Look) {
   }
 }
 
+/** The background opacity of the mode in use. */
+export const background = (look: Look) => (look.subtitle ? look.subBg : look.bg);
+
+/** Sets the background opacity of the mode in use. */
+export const withBackground = (look: Look, value: number): Look =>
+  look.subtitle ? { ...look, subBg: value } : { ...look, bg: value };
+
 /** Over a mostly see-through background the text gets a dark outline, like subtitles on a video. */
-export const outlined = (look: Look) => look.bg < 60;
+export const outlined = (look: Look) => background(look) < 60;
+
+/** The controls float above the captions (and hide while the mouse is away) in subtitle mode or
+ * over a see-through background. */
+export const floating = (look: Look) => look.subtitle || outlined(look);
 
 /** The translation's colour: the one picked, white over a see-through background, else the theme's. */
 export function textColor(look: Look): string | null {

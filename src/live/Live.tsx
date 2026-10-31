@@ -7,7 +7,9 @@ import { isNote, toSrt, toText, type Caption } from "../lib/captions";
 import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liveStar, liveStart, liveStop, PROVIDERS, showSettings,
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 import { locale, N_, t } from "../lib/i18n";
-import { COLORS, loadLook, nextScale, outlined, saveLook, SCALES, textColor, type Look } from "./look";
+import {
+  background, COLORS, floating, loadLook, nextScale, outlined, saveLook, SCALES, textColor, withBackground, type Look,
+} from "./look";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
 /** A caption line, or (with `divider`) the start of a later session. */
@@ -48,6 +50,7 @@ export function Live() {
   const [now, setNow] = useState(Date.now());
   const [look, setLook] = useState<Look>(loadLook);
   const [lookOpen, setLookOpen] = useState(false);
+  const [tip, setTip] = useState<string | null>(null); // a short hint, gone by itself
   const lookOpenRef = useRef(false);
   lookOpenRef.current = lookOpen;
   const body = useRef<HTMLDivElement>(null);
@@ -216,11 +219,25 @@ export function Live() {
   const empty = !turns.length && !current.input && !current.output;
 
   const restyle = (change: Partial<Look>) => setLook((l) => ({ ...l, ...change }));
+  const toggleSubtitle = () => {
+    const on = !look.subtitle;
+    restyle({ subtitle: on });
+    if (on) {
+      setTip(t("字幕模式：滑鼠移到字幕上才會出現按鈕。拖曳上方可以移動，拉邊角可以縮放。"));
+      setTimeout(() => setTip(null), 6000);
+    } else {
+      setTip(null);
+    }
+  };
+  // Floating controls hide while the mouse is away, but only while captions run: a stopped or
+  // empty bar keeps them, so a see-through window never leaves nothing to click.
+  const autohide = floating(look) && running;
   const color = textColor(look);
   const customColor = !COLORS.some((c) => c.id === look.color);
-  // In subtitle mode, only the latest captions: the last finished one and the one being heard.
+  // Subtitle mode shows one sentence at a time, like video subtitles: the one being translated, or
+  // until its translation starts, the last finished one (with the new original heard so far).
   const lines = turns.map((turn, i) => ({ turn, i })).filter(({ turn }) => !look.subtitle || !turn.divider);
-  const shown = look.subtitle ? lines.slice(current.input || current.output ? -1 : -2) : lines;
+  const shown = look.subtitle ? (current.output.trim() ? [] : lines.slice(-1)) : lines;
 
   /** Saves the captions so far (and the line in progress) to the Downloads folder. */
   const exportAs = async (ext: "txt" | "srt") => {
@@ -240,9 +257,13 @@ export function Live() {
 
   return (
     <div
-      className={`live${look.subtitle ? " subtitle" : ""}${outlined(look) ? " outlined" : ""}${look.original ? "" : " no-original"}`}
-      style={{ "--lv-scale": look.scale, "--lv-bg": `${look.bg}%`, ...(color ? { "--lv-color": color } : {}) } as React.CSSProperties}
+      className={`live${look.subtitle ? " subtitle" : ""}${outlined(look) ? " outlined" : ""}${floating(look) ? " floating" : ""}`
+        + `${autohide ? " autohide" : ""}${look.original ? "" : " no-original"}`}
+      style={{ "--lv-scale": look.scale, "--lv-bg": `${background(look)}%`, ...(color ? { "--lv-color": color } : {}) } as React.CSSProperties}
     >
+      {/* Controls. Over a see-through background they float above the captions and show only while
+          the mouse is over the bar, so a subtitle strip is all text the rest of the time. */}
+      <div className="lv-top">
       <div className="lv-head" data-tauri-drag-region>
         <span className={`lv-dot s-${state}`} aria-hidden />
         <span className="lv-state" data-tauri-drag-region>{t(STATE_LABEL[state])}</span>
@@ -269,7 +290,7 @@ export function Live() {
           >{t("螢幕")}</button>
         </div>
         <label className="lv-tutor">
-          {t("註解")}
+          <span className="lv-tutor-text">{t("註解")}</span>
           <button className="switch" role="switch" aria-checked={tutor} aria-label={t("教學註解")} onClick={toggleTutor} />
         </label>
         {running
@@ -282,10 +303,91 @@ export function Live() {
             >{t("開始")}</button>
           )}
         <button
+          className={`btn lv-look-btn${look.subtitle ? " on" : ""}`} aria-pressed={look.subtitle} aria-label={t("字幕模式")}
+          onClick={toggleSubtitle} title={t("字幕模式：只留最新的字幕疊在畫面上，可以直接當影片字幕")}
+        >CC</button>
+        <button
+          className={`btn lv-look-btn${lookOpen ? " on" : ""}`} aria-expanded={lookOpen} aria-label={t("外觀")}
+          onClick={() => setLookOpen((v) => !v)} title={t("字幕大小、顏色和背景透明度")}
+        >Aa</button>
+        <button
           className="btn quiet" onClick={() => { setTurns([]); cur.current = { input: "", output: "" }; setCurrent(cur.current); }}
           disabled={!turns.length && !current.input && !current.output} title={t("清除字幕（已存進歷史紀錄的不受影響）")}
         >{t("清除")}</button>
         <button className="btn quiet" onClick={() => closeLive()} aria-label={t("關閉並停止")} title={t("關閉並停止（Esc）")}>✕</button>
+      </div>
+
+      {info && !noKeys && (
+        <div className="lv-sub">
+          <span className="faint">{t("服務")}</span>
+          <select
+            className="field" value={info.chosen ?? ""} aria-label={t("Live 使用的服務")}
+            onChange={(e) => chooseProvider(e.target.value)}
+          >
+            <option value="">{t("自動")}</option>
+            {info.options.map((o) => (
+              <option key={o.provider} value={o.provider}>
+                {name(o.provider)}{o.audio ? "" : t("（只能看螢幕）")}
+              </option>
+            ))}
+          </select>
+          {info.label && running && <span className="faint lv-label num">{t("正在使用 {label}", { label: info.label })}</span>}
+          <span className="grow" />
+          <select
+            className="field" value="" aria-label={t("匯出字幕")} disabled={empty}
+            onChange={(e) => { const f = e.target.value as "txt" | "srt"; e.target.value = ""; if (f) exportAs(f); }}
+          >
+            <option value="" disabled>{t("匯出…")}</option>
+            <option value="txt">{t("文字檔（TXT）")}</option>
+            <option value="srt">{t("字幕檔（SRT）")}</option>
+          </select>
+        </div>
+      )}
+
+      {lookOpen && (
+        <div className="lv-look" role="group" aria-label={t("外觀")}>
+          <span className="lv-look-item">
+            <span className="faint">{t("大小")}</span>
+            <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, -1) })}
+              disabled={look.scale === SCALES[0]} title={t("字幕小一點")}>A−</button>
+            <span className="num lv-look-val">{Math.round(look.scale * 100)}%</span>
+            <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, 1) })}
+              disabled={look.scale === SCALES[SCALES.length - 1]} title={t("字幕大一點")}>A+</button>
+          </span>
+          <label className="lv-look-item" title={t("降低後只剩文字疊在畫面上，可以直接當影片字幕")}>
+            <span className="faint">{t("背景")}</span>
+            <input type="range" min={0} max={100} step={5} value={background(look)}
+              onChange={(e) => setLook((l) => withBackground(l, Number(e.target.value)))} aria-label={t("背景透明度")} />
+            <span className="num lv-look-val">{background(look)}%</span>
+          </label>
+          <span className="lv-look-item" role="radiogroup" aria-label={t("字幕顏色")}>
+            <span className="faint">{t("顏色")}</span>
+            {COLORS.map((c) => (
+              <button
+                key={c.id} role="radio" aria-checked={look.color === c.id} title={t(c.label)}
+                className={`lv-swatch${c.id === "auto" ? " auto" : ""}`}
+                style={c.id === "auto" ? undefined : { background: c.id }}
+                onClick={() => restyle({ color: c.id })}
+              >{c.id === "auto" ? t("自動") : ""}</button>
+            ))}
+            <label
+              className="lv-swatch pick" role="radio" aria-checked={customColor} title={t("自訂顏色")}
+              style={customColor ? { background: look.color } : undefined}
+            >
+              <input
+                type="color" aria-label={t("自訂顏色")}
+                value={look.color === "auto" ? "#ffffff" : look.color}
+                onChange={(e) => restyle({ color: e.target.value })}
+              />
+            </label>
+          </span>
+          <label className="lv-look-item">
+            {t("顯示原文")}
+            <button className="switch" role="switch" aria-checked={look.original} aria-label={t("顯示原文")}
+              onClick={() => restyle({ original: !look.original })} />
+          </label>
+        </div>
+      )}
       </div>
 
       <div
@@ -295,86 +397,7 @@ export function Live() {
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
         }}
       >
-        {info && !noKeys && (
-          <div className="lv-sub">
-            <span className="faint">{t("服務")}</span>
-            <select
-              className="field" value={info.chosen ?? ""} aria-label={t("Live 使用的服務")}
-              onChange={(e) => chooseProvider(e.target.value)}
-            >
-              <option value="">{t("自動")}</option>
-              {info.options.map((o) => (
-                <option key={o.provider} value={o.provider}>
-                  {name(o.provider)}{o.audio ? "" : t("（只能看螢幕）")}
-                </option>
-              ))}
-            </select>
-            {info.label && running && <span className="faint lv-label num">{t("正在使用 {label}", { label: info.label })}</span>}
-            <span className="grow" />
-            <button
-              className={`btn quiet${lookOpen ? " on" : ""}`} aria-expanded={lookOpen} onClick={() => setLookOpen((v) => !v)}
-              title={t("字幕大小、顏色和背景透明度")}
-            >{t("外觀")}</button>
-            <select
-              className="field" value="" aria-label={t("匯出字幕")} disabled={empty}
-              onChange={(e) => { const f = e.target.value as "txt" | "srt"; e.target.value = ""; if (f) exportAs(f); }}
-            >
-              <option value="" disabled>{t("匯出…")}</option>
-              <option value="txt">{t("文字檔（TXT）")}</option>
-              <option value="srt">{t("字幕檔（SRT）")}</option>
-            </select>
-          </div>
-        )}
-
-        {lookOpen && (
-          <div className="lv-look" role="group" aria-label={t("外觀")}>
-            <span className="lv-look-item">
-              <span className="faint">{t("大小")}</span>
-              <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, -1) })}
-                disabled={look.scale === SCALES[0]} title={t("字幕小一點")}>A−</button>
-              <span className="num lv-look-val">{Math.round(look.scale * 100)}%</span>
-              <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, 1) })}
-                disabled={look.scale === SCALES[SCALES.length - 1]} title={t("字幕大一點")}>A+</button>
-            </span>
-            <label className="lv-look-item" title={t("降低後只剩文字疊在畫面上，可以直接當影片字幕")}>
-              <span className="faint">{t("背景")}</span>
-              <input type="range" min={0} max={100} step={5} value={look.bg}
-                onChange={(e) => restyle({ bg: Number(e.target.value) })} aria-label={t("背景透明度")} />
-              <span className="num lv-look-val">{look.bg}%</span>
-            </label>
-            <span className="lv-look-item" role="radiogroup" aria-label={t("字幕顏色")}>
-              <span className="faint">{t("顏色")}</span>
-              {COLORS.map((c) => (
-                <button
-                  key={c.id} role="radio" aria-checked={look.color === c.id} title={t(c.label)}
-                  className={`lv-swatch${c.id === "auto" ? " auto" : ""}`}
-                  style={c.id === "auto" ? undefined : { background: c.id }}
-                  onClick={() => restyle({ color: c.id })}
-                >{c.id === "auto" ? t("自動") : ""}</button>
-              ))}
-              <label
-                className="lv-swatch pick" role="radio" aria-checked={customColor} title={t("自訂顏色")}
-                style={customColor ? { background: look.color } : undefined}
-              >
-                <input
-                  type="color" aria-label={t("自訂顏色")}
-                  value={look.color === "auto" ? "#ffffff" : look.color}
-                  onChange={(e) => restyle({ color: e.target.value })}
-                />
-              </label>
-            </span>
-            <label className="lv-look-item" title={t("只顯示最新的字幕，滑鼠移到字幕列上才出現按鈕")}>
-              {t("字幕模式")}
-              <button className="switch" role="switch" aria-checked={look.subtitle} aria-label={t("字幕模式")}
-                onClick={() => restyle({ subtitle: !look.subtitle })} />
-            </label>
-            <label className="lv-look-item">
-              {t("顯示原文")}
-              <button className="switch" role="switch" aria-checked={look.original} aria-label={t("顯示原文")}
-                onClick={() => restyle({ original: !look.original })} />
-            </label>
-          </div>
-        )}
+        {tip && <div className="lv-msg lv-tip" role="status">{tip}</div>}
 
         {message && (
           // Stays in view while the captions scroll; closing it only hides it.
