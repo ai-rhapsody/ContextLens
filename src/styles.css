@@ -254,11 +254,11 @@ html.live-window, html.live-window body { background: transparent; }
   .lv-dot.s-listening { animation: lv-pulse 1.6s ease-in-out infinite; }
   @keyframes lv-pulse { 50% { opacity: .35; } }
 }
-.lv-state { color: var(--muted); white-space: nowrap; flex: 0 10 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lv-state { color: var(--muted); white-space: nowrap; flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lv-clock { color: var(--muted); flex: none; }
 .lv-meter { width: 44px; height: 4px; border-radius: 2px; background: var(--active); overflow: hidden; flex: 0 1 44px; min-width: 16px; }
 .lv-meter i { display: block; height: 100%; background: var(--positive); transition: width .12s linear; }
-.lv-sources { display: flex; flex: none; border: 1px solid var(--control); border-radius: var(--radius-control); overflow: hidden; }
+.lv-sources { display: flex; flex: 0 1 auto; min-width: 0; border: 1px solid var(--control); border-radius: var(--radius-control); overflow: hidden; }
 .lv-sources button { height: 28px; padding: 0 10px; border: 0; background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap;
   /* On a narrow bar or in a long language the source names shorten before the buttons on the right move off. */
   flex: 0 1 auto; min-width: 40px; overflow: hidden; text-overflow: ellipsis; }
@@ -375,7 +375,6 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .lv-divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; }
 .lv-divider::before, .lv-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .about { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
-.lv-model { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; min-width: 48px; flex: 0 40 auto; }
 .status-line { overflow-wrap: anywhere; user-select: text; }
 .release-notes { font: inherit; font-size: 13px; line-height: 20px; }
 
@@ -419,6 +418,11 @@ html:lang(zh-TW) .hk-task { width: 92px; }
 .live.autohide .lv-top { position: absolute; inset: 0 0 auto 0; z-index: 2; transition: opacity .15s; }
 .live.autohide:not(:hover) .lv-top { opacity: 0; pointer-events: none; }
 .live.autohide:not(:hover) { border-color: transparent; }
+/* Clicks pass through: no hover reaches the window, so the controls show only while the peek key
+   has given it the mouse. */
+.live.through:not(.peek) .lv-top { opacity: 0; pointer-events: none; }
+.live.through.peek .lv-top { opacity: 1; pointer-events: auto; }
+.live.through:not(.peek) { border-color: transparent; }
 /* Subtitle mode: the latest captions centred at the bottom; what no longer fits fades out at the top. */
 .live.subtitle .lv-body {
   justify-content: flex-end; text-align: center; overflow: hidden;
@@ -430,7 +434,7 @@ html:lang(zh-TW) .hk-task { width: 92px; }
 .lv-look { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 10px; border-radius: var(--radius-control);
   background: var(--raised); font-size: 12px; text-shadow: none; flex: none; margin: 0 12px 8px; }
 /* Opens the appearance row; text-like, so it reads as "fonts and colours" at a glance. */
-.lv-look-btn { font-weight: 600; padding: 0 9px; }
+.lv-look-btn { font-weight: 600; padding: 0 9px; display: inline-flex; align-items: center; }
 .lv-look-btn[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .lv-look-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .lv-look-item .btn { height: 24px; padding: 0 6px; font-size: 12px; }
@@ -447,10 +451,9 @@ html:lang(zh-TW) .hk-task { width: 92px; }
   background: color-mix(in srgb, var(--surface) 88%, transparent); padding: 4px 8px; border-radius: var(--radius-control);
 }
 /* A narrow bar drops what it can spare, so Stop, the mode buttons and ✕ always fit; before that the
-   model name, then the status, shrink ahead of the source buttons. */
+   status, then the source names, shrink. */
 @media (max-width: 620px) {
-  .lv-model, .lv-clock, .lv-meter { display: none; }
-  .lv-sources { flex: 0 1 auto; min-width: 0; }
+  .lv-clock, .lv-meter { display: none; }
 }
 @media (max-width: 500px) {
   .lv-head { gap: 4px; }

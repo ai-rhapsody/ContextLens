@@ -12,6 +12,8 @@ export type Look = {
   color: string;
   /** Only the latest captions, centred at the bottom; the controls show while the mouse is over the bar. */
   subtitle: boolean;
+  /** In subtitle mode, clicks pass through the captions to what is under them (a video's controls). */
+  passthrough: boolean;
   /** The original text above each translation. */
   original: boolean;
 };
@@ -27,7 +29,9 @@ export const COLORS: { id: string; label: string }[] = [
   { id: "#7dff8a", label: N_("綠") },
 ];
 
-export const DEFAULT_LOOK: Look = { scale: 1, bg: 100, subBg: 0, color: "auto", subtitle: false, original: true };
+export const DEFAULT_LOOK: Look = {
+  scale: 1, bg: 100, subBg: 0, color: "auto", subtitle: false, passthrough: false, original: true,
+};
 
 const KEY = "lv-look";
 /** Where earlier versions kept only the caption size. */
@@ -52,6 +56,7 @@ export function parseLook(saved: string | null, oldScale: string | null = null):
     subBg: percent(raw.subBg, DEFAULT_LOOK.subBg),
     color: typeof raw.color === "string" && /^(auto|#[0-9a-f]{6})$/i.test(raw.color) ? raw.color : DEFAULT_LOOK.color,
     subtitle: typeof raw.subtitle === "boolean" ? raw.subtitle : DEFAULT_LOOK.subtitle,
+    passthrough: typeof raw.passthrough === "boolean" ? raw.passthrough : DEFAULT_LOOK.passthrough,
     original: typeof raw.original === "boolean" ? raw.original : DEFAULT_LOOK.original,
   };
 }
