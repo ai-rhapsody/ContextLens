@@ -58,7 +58,8 @@
         "visible": false,
         "focus": false,
         "resizable": true,
-        "create": false
+        "create": false,
+        "transparent": true
       },
       {
         "label": "chat",
@@ -73,7 +74,8 @@
         "create": false,
         "dragDropEnabled": false
       }
-    ]
+    ],
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,

@@ -2,26 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { inline } from "../lib/Rich";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isNote, toSrt, toText, type Caption } from "../lib/captions";
 import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liveStar, liveStart, liveStop, PROVIDERS, showSettings,
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 import { locale, N_, t } from "../lib/i18n";
+import { COLORS, loadLook, nextScale, outlined, saveLook, SCALES, textColor, type Look } from "./look";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
 /** A caption line, or (with `divider`) the start of a later session. */
 type Turn = Caption & { starred?: boolean };
-
-/** Caption sizes the A−／A+ buttons step through; remembered on this computer. */
-const SCALES = [0.85, 1, 1.2, 1.45, 1.75];
-const SCALE_KEY = "lv-scale";
-function savedScale(): number {
-  try {
-    const v = Number(localStorage.getItem(SCALE_KEY));
-    return SCALES.includes(v) ? v : 1;
-  } catch {
-    return 1;
-  }
-}
 
 const STATE_LABEL: Record<State, string> = {
   idle: N_("未開始"), connecting: N_("連線中…"), listening: N_("聆聽中"), reconnecting: N_("重新連線中…"),
@@ -56,7 +46,10 @@ export function Live() {
   const [level, setLevel] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [scale, setScale] = useState(savedScale);
+  const [look, setLook] = useState<Look>(loadLook);
+  const [lookOpen, setLookOpen] = useState(false);
+  const lookOpenRef = useRef(false);
+  lookOpenRef.current = lookOpen;
   const body = useRef<HTMLDivElement>(null);
   const cur = useRef<Turn>({ input: "", output: "" }); // mirrors `current` for the event handler
   const stick = useRef(true); // follow new captions unless the user scrolled up
@@ -106,7 +99,12 @@ export function Live() {
     const unEnded = listen("live-ended", () => { settle(); setLevel(0); setStartedAt(null); refresh(); });
     const unChanged = listen("live-changed", refresh);
     const unFocus = listen("tauri://focus", refresh);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeLive();
+    // Esc closes the appearance controls first, then Live.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (lookOpenRef.current) setLookOpen(false);
+      else closeLive();
+    };
     window.addEventListener("keydown", onKey);
     return () => {
       unLive.then((f) => f());
@@ -126,6 +124,17 @@ export function Live() {
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
   }, [turns, current]);
+
+  // The window itself is transparent; the page paints the background at the chosen opacity.
+  useEffect(() => {
+    document.documentElement.classList.add("live-window");
+  }, []);
+
+  useEffect(() => {
+    saveLook(look);
+    // A see-through bar would otherwise keep the window's drop shadow around the empty area.
+    getCurrentWindow().setShadow(look.bg >= 100).catch(() => {});
+  }, [look]);
 
   const running = state === "connecting" || state === "listening" || state === "reconnecting";
   // What the chosen provider (or, on automatic, any provider with a key) can do.
@@ -206,11 +215,12 @@ export function Live() {
 
   const empty = !turns.length && !current.input && !current.output;
 
-  const resize = (step: number) => {
-    const next = SCALES[Math.min(SCALES.length - 1, Math.max(0, SCALES.indexOf(scale) + step))];
-    setScale(next);
-    try { localStorage.setItem(SCALE_KEY, String(next)); } catch { /* the size still applies until closed */ }
-  };
+  const restyle = (change: Partial<Look>) => setLook((l) => ({ ...l, ...change }));
+  const color = textColor(look);
+  const customColor = !COLORS.some((c) => c.id === look.color);
+  // In subtitle mode, only the latest captions: the last finished one and the one being heard.
+  const lines = turns.map((turn, i) => ({ turn, i })).filter(({ turn }) => !look.subtitle || !turn.divider);
+  const shown = look.subtitle ? lines.slice(current.input || current.output ? -1 : -2) : lines;
 
   /** Saves the captions so far (and the line in progress) to the Downloads folder. */
   const exportAs = async (ext: "txt" | "srt") => {
@@ -229,7 +239,10 @@ export function Live() {
   };
 
   return (
-    <div className="live" style={{ "--lv-scale": scale } as React.CSSProperties}>
+    <div
+      className={`live${look.subtitle ? " subtitle" : ""}${outlined(look) ? " outlined" : ""}${look.original ? "" : " no-original"}`}
+      style={{ "--lv-scale": look.scale, "--lv-bg": `${look.bg}%`, ...(color ? { "--lv-color": color } : {}) } as React.CSSProperties}
+    >
       <div className="lv-head" data-tauri-drag-region>
         <span className={`lv-dot s-${state}`} aria-hidden />
         <span className="lv-state" data-tauri-drag-region>{t(STATE_LABEL[state])}</span>
@@ -298,10 +311,10 @@ export function Live() {
             </select>
             {info.label && running && <span className="faint lv-label num">{t("正在使用 {label}", { label: info.label })}</span>}
             <span className="grow" />
-            <span className="lv-size" role="group" aria-label={t("字幕大小")}>
-              <button className="btn quiet" onClick={() => resize(-1)} disabled={scale === SCALES[0]} title={t("字幕小一點")}>A−</button>
-              <button className="btn quiet" onClick={() => resize(1)} disabled={scale === SCALES[SCALES.length - 1]} title={t("字幕大一點")}>A+</button>
-            </span>
+            <button
+              className={`btn quiet${lookOpen ? " on" : ""}`} aria-expanded={lookOpen} onClick={() => setLookOpen((v) => !v)}
+              title={t("字幕大小、顏色和背景透明度")}
+            >{t("外觀")}</button>
             <select
               className="field" value="" aria-label={t("匯出字幕")} disabled={empty}
               onChange={(e) => { const f = e.target.value as "txt" | "srt"; e.target.value = ""; if (f) exportAs(f); }}
@@ -310,6 +323,56 @@ export function Live() {
               <option value="txt">{t("文字檔（TXT）")}</option>
               <option value="srt">{t("字幕檔（SRT）")}</option>
             </select>
+          </div>
+        )}
+
+        {lookOpen && (
+          <div className="lv-look" role="group" aria-label={t("外觀")}>
+            <span className="lv-look-item">
+              <span className="faint">{t("大小")}</span>
+              <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, -1) })}
+                disabled={look.scale === SCALES[0]} title={t("字幕小一點")}>A−</button>
+              <span className="num lv-look-val">{Math.round(look.scale * 100)}%</span>
+              <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, 1) })}
+                disabled={look.scale === SCALES[SCALES.length - 1]} title={t("字幕大一點")}>A+</button>
+            </span>
+            <label className="lv-look-item" title={t("降低後只剩文字疊在畫面上，可以直接當影片字幕")}>
+              <span className="faint">{t("背景")}</span>
+              <input type="range" min={0} max={100} step={5} value={look.bg}
+                onChange={(e) => restyle({ bg: Number(e.target.value) })} aria-label={t("背景透明度")} />
+              <span className="num lv-look-val">{look.bg}%</span>
+            </label>
+            <span className="lv-look-item" role="radiogroup" aria-label={t("字幕顏色")}>
+              <span className="faint">{t("顏色")}</span>
+              {COLORS.map((c) => (
+                <button
+                  key={c.id} role="radio" aria-checked={look.color === c.id} title={t(c.label)}
+                  className={`lv-swatch${c.id === "auto" ? " auto" : ""}`}
+                  style={c.id === "auto" ? undefined : { background: c.id }}
+                  onClick={() => restyle({ color: c.id })}
+                >{c.id === "auto" ? t("自動") : ""}</button>
+              ))}
+              <label
+                className="lv-swatch pick" role="radio" aria-checked={customColor} title={t("自訂顏色")}
+                style={customColor ? { background: look.color } : undefined}
+              >
+                <input
+                  type="color" aria-label={t("自訂顏色")}
+                  value={look.color === "auto" ? "#ffffff" : look.color}
+                  onChange={(e) => restyle({ color: e.target.value })}
+                />
+              </label>
+            </span>
+            <label className="lv-look-item" title={t("只顯示最新的字幕，滑鼠移到字幕列上才出現按鈕")}>
+              {t("字幕模式")}
+              <button className="switch" role="switch" aria-checked={look.subtitle} aria-label={t("字幕模式")}
+                onClick={() => restyle({ subtitle: !look.subtitle })} />
+            </label>
+            <label className="lv-look-item">
+              {t("顯示原文")}
+              <button className="switch" role="switch" aria-checked={look.original} aria-label={t("顯示原文")}
+                onClick={() => restyle({ original: !look.original })} />
+            </label>
           </div>
         )}
 
@@ -347,7 +410,7 @@ export function Live() {
         )}
         {empty && state === "listening" && <p className="lv-hint">{t("正在聆聽…說話或播放聲音就會開始翻譯。")}</p>}
 
-        {turns.map((turn, i) => turn.divider ? (
+        {shown.map(({ turn, i }) => turn.divider ? (
           <div className="lv-divider" key={i} role="separator"><span>{t("{time} 開始", { time: turn.divider })}</span></div>
         ) : (
           <div className={`lv-turn${turn.starred ? " starred" : ""}`} key={i}>
