@@ -254,12 +254,14 @@ html.live-window, html.live-window body { background: transparent; }
   .lv-dot.s-listening { animation: lv-pulse 1.6s ease-in-out infinite; }
   @keyframes lv-pulse { 50% { opacity: .35; } }
 }
-.lv-state { color: var(--muted); white-space: nowrap; flex: none; }
+.lv-state { color: var(--muted); white-space: nowrap; flex: 0 10 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lv-clock { color: var(--muted); flex: none; }
-.lv-meter { width: 44px; height: 4px; border-radius: 2px; background: var(--active); overflow: hidden; flex: none; }
+.lv-meter { width: 44px; height: 4px; border-radius: 2px; background: var(--active); overflow: hidden; flex: 0 1 44px; min-width: 16px; }
 .lv-meter i { display: block; height: 100%; background: var(--positive); transition: width .12s linear; }
 .lv-sources { display: flex; flex: none; border: 1px solid var(--control); border-radius: var(--radius-control); overflow: hidden; }
-.lv-sources button { height: 28px; padding: 0 10px; border: 0; background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.lv-sources button { height: 28px; padding: 0 10px; border: 0; background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap;
+  /* On a narrow bar or in a long language the source names shorten before the buttons on the right move off. */
+  flex: 0 1 auto; min-width: 40px; overflow: hidden; text-overflow: ellipsis; }
 .lv-sources button + button { border-left: 1px solid var(--control); }
 .lv-sources button[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); }
 .lv-sources button:disabled { color: var(--faint); cursor: not-allowed; opacity: .6; }
@@ -295,7 +297,7 @@ html.live-window, html.live-window body { background: transparent; }
 .link { border: 0; padding: 0; background: none; color: var(--accent); cursor: pointer; text-align: left; font: inherit; }
 .link:hover { text-decoration: underline; }
 .offline { margin: 0 0 10px; font-size: 12px; }
-.lv-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.lv-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; white-space: nowrap; }
 .lv-sub .field { height: 26px; font-size: 12px; padding: 0 6px; }
 .lv-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .model-picker { flex: 1; display: flex; gap: 8px; min-width: 0; }
@@ -373,7 +375,7 @@ h2.group { font-size: var(--fs-section); line-height: 22px; font-weight: 600; ma
 .lv-divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; }
 .lv-divider::before, .lv-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .about { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
-.lv-model { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; min-width: 48px; flex: 0 1 auto; }
+.lv-model { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; min-width: 48px; flex: 0 40 auto; }
 .status-line { overflow-wrap: anywhere; user-select: text; }
 .release-notes { font: inherit; font-size: 13px; line-height: 20px; }
 
@@ -392,24 +394,44 @@ html:lang(zh-TW) .mp-label { width: 40px; }
 .hk-task { flex: none; width: 144px; }
 html:lang(zh-TW) .hk-task { width: 92px; }
 
-/* Caption look: colour, an outline over a see-through background, subtitle mode. */
 .live .lv-out { color: var(--lv-color, var(--text)); }
-.live.outlined .lv-out, .live.outlined .lv-in, .live.outlined .lv-note {
-  text-shadow: 0 0 2px #000, 0 0 4px #000, 1px 1px 2px rgb(0 0 0 / .9);
+.live.outlined .lv-out, .live.outlined .lv-in, .live.outlined .lv-note, .live.outlined .lv-hint {
+  /* A solid edge on every side, in proportion to the text, so white reads even over a white frame. */
+  --edge: max(1px, .06em);
+  text-shadow:
+    calc(-1 * var(--edge)) calc(-1 * var(--edge)) 0 #000, var(--edge) calc(-1 * var(--edge)) 0 #000,
+    calc(-1 * var(--edge)) var(--edge) 0 #000, var(--edge) var(--edge) 0 #000,
+    0 calc(-1 * var(--edge)) 0 #000, 0 var(--edge) 0 #000, calc(-1 * var(--edge)) 0 0 #000, var(--edge) 0 0 #000,
+    0 0 .2em rgb(0 0 0 / .6);
 }
+.live.outlined .lv-hint { color: #fff; }
 .live.outlined .lv-in { color: rgb(255 255 255 / .82); }
 .live.outlined .lv-note { color: rgb(255 255 255 / .72); }
 .live.outlined .lv-turn:not(.now) { opacity: .9; }
 .live.no-original .lv-in { display: none; }
-.live.subtitle .lv-body { justify-content: flex-end; text-align: center; overflow: hidden; }
+/* The controls: the bar, the service row and the appearance row, fixed above the captions. */
+.lv-top { flex: none; display: flex; flex-direction: column; }
+.lv-top .lv-sub { padding: 6px 12px; }
+.live.floating .lv-top { background: color-mix(in srgb, var(--surface) 92%, transparent); }
+/* While captions run in subtitle mode (or over a see-through background) the controls lie over
+   the captions and show only while the mouse is over the bar; the captions get the whole window. */
+.live.autohide { position: relative; }
+.live.autohide .lv-top { position: absolute; inset: 0 0 auto 0; z-index: 2; transition: opacity .15s; }
+.live.autohide:not(:hover) .lv-top { opacity: 0; pointer-events: none; }
+.live.autohide:not(:hover) { border-color: transparent; }
+/* Subtitle mode: the latest captions centred at the bottom; what no longer fits fades out at the top. */
+.live.subtitle .lv-body {
+  justify-content: flex-end; text-align: center; overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 32px); mask-image: linear-gradient(to bottom, transparent 0, #000 32px);
+}
 .live.subtitle .lv-turn { justify-items: center; }
-.live.subtitle .lv-head, .live.subtitle .lv-sub, .live.subtitle .lv-look, .live.subtitle .lv-screen { transition: opacity .15s; }
-.live.subtitle:not(:hover) .lv-head, .live.subtitle:not(:hover) .lv-sub,
-.live.subtitle:not(:hover) .lv-look, .live.subtitle:not(:hover) .lv-screen { opacity: 0; }
-.live.subtitle:not(:hover) { border-color: transparent; }
 .live.subtitle .lv-acts { display: none; }
+.lv-tip { justify-content: center; text-shadow: none; }
 .lv-look { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 10px; border-radius: var(--radius-control);
-  background: var(--raised); font-size: 12px; text-shadow: none; }
+  background: var(--raised); font-size: 12px; text-shadow: none; flex: none; margin: 0 12px 8px; }
+/* Opens the appearance row; text-like, so it reads as "fonts and colours" at a glance. */
+.lv-look-btn { font-weight: 600; padding: 0 9px; }
+.lv-look-btn[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .lv-look-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .lv-look-item .btn { height: 24px; padding: 0 6px; font-size: 12px; }
 .lv-look-val { min-width: 3.2em; text-align: right; color: var(--muted); }
@@ -420,8 +442,17 @@ html:lang(zh-TW) .hk-task { width: 92px; }
 /* Any colour: a rainbow until one is picked, then that colour. The input itself is invisible. */
 .lv-swatch.pick { position: relative; background: conic-gradient(#f44, #fd0, #4e4, #4df, #46f, #e4f, #f44); }
 .lv-swatch.pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; padding: 0; border: 0; }
-/* Over a see-through background the controls keep a backing of their own; only the captions float. */
-.live.outlined .lv-head, .live.outlined .lv-sub, .live.outlined .lv-screen {
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+/* The screen-source row sits among the captions; over a see-through background it keeps a backing. */
+.live.outlined .lv-screen {
+  background: color-mix(in srgb, var(--surface) 88%, transparent); padding: 4px 8px; border-radius: var(--radius-control);
 }
-.live.outlined .lv-sub, .live.outlined .lv-screen { padding: 4px 8px; border-radius: var(--radius-control); }
+/* A narrow bar drops what it can spare, so Stop, the mode buttons and ✕ always fit; before that the
+   model name, then the status, shrink ahead of the source buttons. */
+@media (max-width: 620px) {
+  .lv-model, .lv-clock, .lv-meter { display: none; }
+  .lv-sources { flex: 0 1 auto; min-width: 0; }
+}
+@media (max-width: 500px) {
+  .lv-head { gap: 4px; }
+  .lv-state, .lv-tutor-text, .lv-sub .lv-label { display: none; }
+}
