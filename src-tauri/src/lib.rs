@@ -1406,6 +1406,48 @@ async fn live_pick_screen(app: AppHandle) -> Result<(), String> {
     start_snip(&app, s)
 }
 
+/// Resizes the caption bar once, keeping its centre and its bottom edge where they are, so
+/// subtitles grow upward and stay over the video; `keep_top` keeps the top edge instead, so the
+/// button just clicked stays under the mouse. `width` and `height` are logical; no `width` keeps
+/// the current one, and `widen` makes it at least 60% of the monitor wide. The bar stays on its
+/// monitor. Returns the logical size it had before, to go back to.
+#[tauri::command]
+fn live_resize(app: AppHandle, width: Option<f64>, height: f64, widen: bool, keep_top: bool) -> Option<[f64; 2]> {
+    let win = app.get_webview_window("live")?;
+    let scale = win.scale_factor().ok()?;
+    let inner = win.inner_size().ok()?;
+    let before = inner.to_logical::<f64>(scale);
+    let mut w = width.map_or(inner.width as f64, |w| w * scale);
+    let mut h = height * scale;
+    let area = win.current_monitor().ok().flatten().map(|m| *m.work_area());
+    if let Some(area) = &area {
+        let margin = 16.0 * scale;
+        if widen {
+            w = w.max(area.size.width as f64 * 0.6);
+        }
+        w = w.min(area.size.width as f64 - 2.0 * margin);
+        h = h.min(area.size.height as f64 - 2.0 * margin);
+    }
+    // The window's own minimum size (tauri.conf.json).
+    let (w, h) = (w.max(420.0 * scale).round(), h.max(140.0 * scale).round());
+    // A hidden bar is placed when it opens; only a visible one moves.
+    if win.is_visible().unwrap_or(false) {
+        if let (Ok(pos), Ok(outer)) = (win.outer_position(), win.outer_size()) {
+            let centre = pos.x as f64 + outer.width as f64 / 2.0;
+            let bottom = pos.y as f64 + outer.height as f64;
+            let (mut x, mut y) = (centre - w / 2.0, if keep_top { pos.y as f64 } else { bottom - h });
+            if let Some(area) = &area {
+                let (left, top) = (area.position.x as f64, area.position.y as f64);
+                x = x.min(left + area.size.width as f64 - w).max(left);
+                y = y.min(top + area.size.height as f64 - h).max(top);
+            }
+            let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+        }
+    }
+    let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
+    Some([before.width.round(), before.height.round()])
+}
+
 /// Lets clicks pass through the caption bar to the video under it, or stops that. While it is
 /// on, holding the peek key (Ctrl, ⌘ on macOS) with the mouse over the bar gives the bar the
 /// mouse back until the mouse leaves, so its buttons can be used.
@@ -1620,6 +1662,7 @@ pub fn run() {
             reveal_log,
             ui_locale,
             live_passthrough,
+            live_resize,
             history_star,
             history_export,
             save_captions,
