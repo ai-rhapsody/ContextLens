@@ -101,3 +101,11 @@ export function nextScale(scale: number, step: number): number {
   const i = SCALES.indexOf(scale);
   return SCALES[Math.min(SCALES.length - 1, Math.max(0, (i < 0 ? SCALES.indexOf(1) : i) + step))];
 }
+
+/** The height (CSS px) one subtitle needs at this size: two lines of translation and, when shown,
+ * two of the original above them. Matches `.lv-out`, `.lv-in` and `.lv-turn` in styles.css. */
+export function subtitleTextHeight(look: Look): number {
+  const out = 2 * 18 * 1.5 * look.scale;
+  const original = look.original ? 2 * 13 * 1.45 * look.scale + 2 : 0;
+  return Math.ceil(out + original);
+}

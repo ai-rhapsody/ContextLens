@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { background, DEFAULT_LOOK, floating, nextScale, parseLook, textColor, withBackground } from "./look";
+import { background, DEFAULT_LOOK, floating, nextScale, parseLook, subtitleTextHeight, textColor, withBackground } from "./look";
 
 describe("caption look", () => {
   it("starts from the defaults and keeps an earlier caption size", () => {
@@ -43,5 +43,11 @@ describe("caption look", () => {
     expect(nextScale(0.8, -1)).toBe(0.8);
     expect(nextScale(3.2, 1)).toBe(3.2);
     expect(nextScale(1.2, 1)).toBe(1.15); // a size no longer offered starts from normal
+  });
+
+  it("makes room for two lines of each text at the caption size", () => {
+    expect(subtitleTextHeight(DEFAULT_LOOK)).toBe(94); // 54 + 38 + 2
+    expect(subtitleTextHeight({ ...DEFAULT_LOOK, original: false })).toBe(54);
+    expect(subtitleTextHeight({ ...DEFAULT_LOOK, scale: 2 })).toBeGreaterThan(2 * subtitleTextHeight(DEFAULT_LOOK) - 4);
   });
 });

@@ -8,7 +8,8 @@ import { closeLive, liveFollowUp, liveInfo, livePickScreen, liveSetProvider, liv
   type Provider, type LiveEvent, type LiveInfo, type LiveSource } from "../lib/api";
 import { locale, N_, t } from "../lib/i18n";
 import {
-  background, COLORS, floating, loadLook, nextScale, outlined, saveLook, SCALES, textColor, withBackground, type Look,
+  background, COLORS, floating, loadLook, nextScale, outlined, saveLook, SCALES, subtitleTextHeight, textColor, withBackground,
+  type Look,
 } from "./look";
 
 type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "stopped" | "error";
@@ -60,6 +61,9 @@ export function Live() {
   const lookOpenRef = useRef(false);
   lookOpenRef.current = lookOpen;
   const body = useRef<HTMLDivElement>(null);
+  const top = useRef<HTMLDivElement>(null);
+  // The bar's size before subtitle mode sized it, to go back to when subtitle mode ends.
+  const normalSize = useRef<[number, number] | null>(null);
   const cur = useRef<Turn>({ input: "", output: "" }); // mirrors `current` for the event handler
   const stick = useRef(true); // follow new captions unless the user scrolled up
   const lastState = useRef<State>("idle");
@@ -236,15 +240,44 @@ export function Live() {
     window.clearTimeout(tipTimer.current);
     if (text) tipTimer.current = window.setTimeout(() => setTip(null), 7000);
   };
+  /** Sizes the bar for subtitles, once, on a click (never while captions come in): tall enough for
+   * one subtitle at this size under the controls, which show over the top on hover, and for an
+   * open appearance row; with `widen`, also wide like a video. `grow` only ever makes it bigger.
+   * The bottom edge stays put, unless the click came from the controls at the top (`keepTop`). */
+  const fitSubtitle = (l: Look, { widen = false, grow = false, keepTop = false } = {}) => {
+    const el = top.current;
+    const controls = el
+      ? [...el.children].filter((c) => !c.classList.contains("lv-look")).reduce((h, c) => h + (c as HTMLElement).offsetHeight, 0)
+      : 0;
+    const height = Math.max(controls + subtitleTextHeight(l) + 24, (el?.offsetHeight ?? 0) + 8);
+    if (grow && height <= window.innerHeight) return Promise.resolve(null);
+    return invoke<[number, number] | null>("live_resize", { width: null, height, widen, keepTop }).catch(() => null);
+  };
+  const enterSubtitle = (l: Look) => fitSubtitle(l, { widen: true }).then((before) => { normalSize.current = before; });
+  const leaveSubtitle = () => {
+    // Opened in subtitle mode, the bar has no earlier size: back to the one it starts with.
+    const [width, height] = normalSize.current ?? [760, 240];
+    normalSize.current = null;
+    invoke("live_resize", { width, height, widen: false, keepTop: false }).catch(() => {});
+  };
+  /** The caption size or the original line changed: in subtitle mode the bar fits the new text. */
+  const restyleText = (change: Partial<Look>) => {
+    const next = { ...look, ...change };
+    restyle(change);
+    if (next.subtitle) fitSubtitle(next, { keepTop: true });
+  };
   const toggleSubtitle = () => {
     const on = !look.subtitle;
     restyle({ subtitle: on });
+    if (on) enterSubtitle({ ...look, subtitle: true });
+    else leaveSubtitle();
     showTip(on ? t("字幕模式：滑鼠移到字幕上才會出現按鈕。拖曳上方可以移動，拉邊角可以縮放。") : null);
   };
   const togglePassthrough = () => {
     const on = !lookRef.current.passthrough;
     // Pass-through belongs to subtitle mode, so switching it on (from the tray too) enters it.
     restyle(on ? { passthrough: true, subtitle: true } : { passthrough: false });
+    if (on && !lookRef.current.subtitle) enterSubtitle({ ...lookRef.current, subtitle: true });
     showTip(!on ? null : PEEK_KEY
       ? t("滑鼠穿透：點擊會直接穿過字幕。按住 {key} 把滑鼠移到字幕上，按鈕就會出現。", { key: PEEK_KEY })
       : t("滑鼠穿透：點擊會直接穿過字幕。要使用按鈕，從系統匣選單關閉滑鼠穿透。"));
@@ -261,6 +294,18 @@ export function Live() {
     invoke("live_passthrough", { on: through }).catch(() => {});
     if (!through) setPeek(false);
   }, [through]);
+  // Opening in subtitle mode sizes the bar for it once, when the controls are in (the service row
+  // comes with the first info). The bar is still hidden then, so only its size changes.
+  const fittedOnOpen = useRef(false);
+  useEffect(() => {
+    if (!info || fittedOnOpen.current) return;
+    fittedOnOpen.current = true;
+    if (lookRef.current.subtitle) fitSubtitle(lookRef.current, { widen: true });
+  }, [info]);
+  // The appearance row must fit in a short subtitle bar.
+  useEffect(() => {
+    if (lookOpen && lookRef.current.subtitle) fitSubtitle(lookRef.current, { grow: true, keepTop: true });
+  }, [lookOpen]);
   const color = textColor(look);
   const customColor = !COLORS.some((c) => c.id === look.color);
   // Subtitle mode shows one sentence at a time, like video subtitles: the one being translated, or
@@ -292,7 +337,7 @@ export function Live() {
     >
       {/* Controls. Over a see-through background they float above the captions and show only while
           the mouse is over the bar, so a subtitle strip is all text the rest of the time. */}
-      <div className="lv-top">
+      <div className="lv-top" ref={top}>
       <div className="lv-head" data-tauri-drag-region>
         <span className={`lv-dot s-${state}`} aria-hidden />
         <span className="lv-state" data-tauri-drag-region>{t(STATE_LABEL[state])}</span>
@@ -387,10 +432,10 @@ export function Live() {
         <div className="lv-look" role="group" aria-label={t("外觀")}>
           <span className="lv-look-item">
             <span className="faint">{t("大小")}</span>
-            <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, -1) })}
+            <button className="btn quiet" onClick={() => restyleText({ scale: nextScale(look.scale, -1) })}
               disabled={look.scale === SCALES[0]} title={t("字幕小一點")}>A−</button>
             <span className="num lv-look-val">{Math.round(look.scale * 100)}%</span>
-            <button className="btn quiet" onClick={() => restyle({ scale: nextScale(look.scale, 1) })}
+            <button className="btn quiet" onClick={() => restyleText({ scale: nextScale(look.scale, 1) })}
               disabled={look.scale === SCALES[SCALES.length - 1]} title={t("字幕大一點")}>A+</button>
           </span>
           <label className="lv-look-item" title={t("降低後只剩文字疊在畫面上，可以直接當影片字幕")}>
@@ -423,7 +468,7 @@ export function Live() {
           <label className="lv-look-item">
             {t("顯示原文")}
             <button className="switch" role="switch" aria-checked={look.original} aria-label={t("顯示原文")}
-              onClick={() => restyle({ original: !look.original })} />
+              onClick={() => restyleText({ original: !look.original })} />
           </label>
         </div>
       )}
