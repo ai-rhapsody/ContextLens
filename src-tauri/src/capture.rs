@@ -349,6 +349,29 @@ pub mod mac {
         // kCGEventSourceStateCombinedSessionState
         unsafe { CGEventSourceFlagsState(0) & MASK != 0 }
     }
+
+    /// Command is down.
+    pub fn command_held() -> bool {
+        unsafe { CGEventSourceFlagsState(0) & 0x100000 != 0 }
+    }
+}
+
+/// The key held to reach the caption bar while clicks pass through it: Ctrl, or ⌘ on macOS.
+/// Linux has no portable way to read it; there the tray menu turns pass-through off.
+#[cfg(target_os = "windows")]
+pub fn peek_key_held() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL};
+    unsafe { GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000 != 0 }
+}
+
+#[cfg(target_os = "macos")]
+pub fn peek_key_held() -> bool {
+    mac::command_held()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn peek_key_held() -> bool {
+    false
 }
 
 fn send_copy() -> Result<(), String> {

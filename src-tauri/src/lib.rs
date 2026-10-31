@@ -59,6 +59,10 @@ struct AppState {
     live_sources: Mutex<Vec<live::LiveSource>>,
     /// The screen area Live watches when the screen source is on.
     live_screen: Mutex<Option<live::ScreenTarget>>,
+    /// Clicks pass through the caption bar to what is under it (a video's controls).
+    live_through: AtomicBool,
+    /// The thread that hands the bar the mouse back while the peek key is held is running.
+    live_peek_watch: AtomicBool,
     http: contextlens_core::reqwest::Client,
 }
 
@@ -345,6 +349,8 @@ fn stop_live(app: &AppHandle) {
     if let Some(h) = app.state::<AppState>().live.lock().unwrap().take() {
         h.stop();
     }
+    // A stopped bar must take clicks again, or there would be nothing to press Start on.
+    app.state::<AppState>().live_through.store(false, Ordering::SeqCst);
     live_status(app, "stopped", None);
     let _ = app.emit_to("live", "live-ended", ());
 }
@@ -641,6 +647,7 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &MenuItem::with_id(app, "translator", t!("開啟翻譯視窗"), true, None::<&str>)?,
             &MenuItem::with_id(app, "live", t!("Live 即時翻譯"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "live_through", t!("Live 滑鼠穿透（開／關）"), true, None::<&str>)?,
             &MenuItem::with_id(app, "settings", t!("開啟 ContextLens"), true, None::<&str>)?,
             &MenuItem::with_id(app, "quit", t!("結束 ContextLens"), true, None::<&str>)?,
         ],
@@ -1399,6 +1406,54 @@ async fn live_pick_screen(app: AppHandle) -> Result<(), String> {
     start_snip(&app, s)
 }
 
+/// Lets clicks pass through the caption bar to the video under it, or stops that. While it is
+/// on, holding the peek key (Ctrl, ⌘ on macOS) with the mouse over the bar gives the bar the
+/// mouse back until the mouse leaves, so its buttons can be used.
+#[tauri::command]
+fn live_passthrough(app: AppHandle, state: State<AppState>, on: bool) {
+    state.live_through.store(on, Ordering::SeqCst);
+    if on && !state.live_peek_watch.swap(true, Ordering::SeqCst) {
+        let app = app.clone();
+        std::thread::spawn(move || watch_peek(app));
+    }
+}
+
+/// Runs while pass-through is on and owns the window's mouse setting, so a quick off-and-on
+/// never leaves it in the wrong state.
+fn watch_peek(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let mut peeking = None;
+    while state.live_through.load(Ordering::SeqCst) {
+        let Some(win) = app.get_webview_window("live") else { break };
+        let inside = match (app.cursor_position(), win.outer_position(), win.outer_size()) {
+            (Ok(c), Ok(p), Ok(s)) => {
+                let (x, y) = (c.x - p.x as f64, c.y - p.y as f64);
+                x >= 0.0 && y >= 0.0 && x < s.width as f64 && y < s.height as f64
+            }
+            _ => false,
+        };
+        // Once reached, the bar keeps the mouse until it leaves, so the key can be let go to click.
+        // A mouse already over it at the start (it just clicked the switch, or Start) counts as
+        // reached: the buttons stay put under it and clicks pass through once it moves away.
+        let next = if peeking == Some(false) { inside && capture::peek_key_held() } else { inside };
+        if peeking != Some(next) {
+            peeking = Some(next);
+            let _ = win.set_ignore_cursor_events(!next);
+            let _ = app.emit_to("live", "live-peek", next);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+    if let Some(win) = app.get_webview_window("live") {
+        let _ = win.set_ignore_cursor_events(false);
+    }
+    let _ = app.emit_to("live", "live-peek", false);
+    state.live_peek_watch.store(false, Ordering::SeqCst);
+    // Turned back on while this thread was finishing: keep watching.
+    if state.live_through.load(Ordering::SeqCst) && !state.live_peek_watch.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(move || watch_peek(app));
+    }
+}
+
 /// Closing the caption bar ends the session; Live is billed while it runs.
 #[tauri::command]
 fn close_live(app: AppHandle) {
@@ -1564,6 +1619,7 @@ pub fn run() {
             diagnostics,
             reveal_log,
             ui_locale,
+            live_passthrough,
             history_star,
             history_export,
             save_captions,
@@ -1598,6 +1654,8 @@ pub fn run() {
                     settings.live_sources.clone()
                 }),
                 live_screen: Mutex::new(None),
+                live_through: AtomicBool::new(false),
+                live_peek_watch: AtomicBool::new(false),
                 http: contextlens_core::http_client(),
             });
             if let Err(e) = register_hotkeys(&handle, &settings) {
@@ -1626,6 +1684,10 @@ pub fn run() {
                 .on_menu_event(|app, e| match e.id.as_ref() {
                     "translator" => show_popup(app, Capture::default()),
                     "live" => open_live_window(app),
+                    // Also the way back on Linux, where the peek key cannot be read.
+                    "live_through" => {
+                        let _ = app.emit_to("live", "live-through-toggle", ());
+                    }
                     "settings" => open_settings(app),
                     "quit" => app.exit(0),
                     _ => {}

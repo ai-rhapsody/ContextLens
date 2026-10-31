@@ -9,8 +9,9 @@ describe("caption look", () => {
   });
 
   it("puts values out of range back to their defaults", () => {
-    const look = parseLook(JSON.stringify({ scale: 9, bg: 140, color: "red", subtitle: "yes", original: false }));
+    const look = parseLook(JSON.stringify({ scale: 9, bg: 140, color: "red", subtitle: "yes", passthrough: 1, original: false }));
     expect(look).toEqual({ ...DEFAULT_LOOK, bg: 100, original: false });
+    expect(parseLook(JSON.stringify({ subtitle: true, passthrough: true }))).toMatchObject({ subtitle: true, passthrough: true });
     expect(parseLook(JSON.stringify({ bg: -5, color: "#FFD400" }))).toMatchObject({ bg: 0, color: "#FFD400" });
     expect(parseLook(JSON.stringify({ bg: null })).bg).toBe(100);
   });

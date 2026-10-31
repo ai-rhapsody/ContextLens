@@ -15,6 +15,9 @@ type State = "idle" | "connecting" | "listening" | "reconnecting" | "paused" | "
 /** A caption line, or (with `divider`) the start of a later session. */
 type Turn = Caption & { starred?: boolean };
 
+/** The key that reaches the bar while clicks pass through it; Linux cannot read one (tray instead). */
+const PEEK_KEY = /Mac/.test(navigator.userAgent) ? "⌘" : /Windows/.test(navigator.userAgent) ? "Ctrl" : null;
+
 const STATE_LABEL: Record<State, string> = {
   idle: N_("未開始"), connecting: N_("連線中…"), listening: N_("聆聽中"), reconnecting: N_("重新連線中…"),
   paused: N_("已暫停"), stopped: N_("已停止"), error: N_("發生錯誤"),
@@ -51,6 +54,9 @@ export function Live() {
   const [look, setLook] = useState<Look>(loadLook);
   const [lookOpen, setLookOpen] = useState(false);
   const [tip, setTip] = useState<string | null>(null); // a short hint, gone by itself
+  const [peek, setPeek] = useState(false); // pass-through is on, but the peek key gave the bar the mouse
+  const lookRef = useRef(look);
+  lookRef.current = look;
   const lookOpenRef = useRef(false);
   lookOpenRef.current = lookOpen;
   const body = useRef<HTMLDivElement>(null);
@@ -102,6 +108,9 @@ export function Live() {
     const unEnded = listen("live-ended", () => { settle(); setLevel(0); setStartedAt(null); refresh(); });
     const unChanged = listen("live-changed", refresh);
     const unFocus = listen("tauri://focus", refresh);
+    const unPeek = listen<boolean>("live-peek", ({ payload }) => setPeek(payload));
+    // The tray menu's switch, the way back where the peek key cannot be read (Linux).
+    const unThrough = listen("live-through-toggle", () => togglePassthroughRef.current());
     // Esc closes the appearance controls first, then Live.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -114,6 +123,8 @@ export function Live() {
       unEnded.then((f) => f());
       unChanged.then((f) => f());
       unFocus.then((f) => f());
+      unPeek.then((f) => f());
+      unThrough.then((f) => f());
       window.removeEventListener("keydown", onKey);
     };
   }, [refresh]);
@@ -219,19 +230,37 @@ export function Live() {
   const empty = !turns.length && !current.input && !current.output;
 
   const restyle = (change: Partial<Look>) => setLook((l) => ({ ...l, ...change }));
+  const tipTimer = useRef<number>();
+  const showTip = (text: string | null) => {
+    setTip(text);
+    window.clearTimeout(tipTimer.current);
+    if (text) tipTimer.current = window.setTimeout(() => setTip(null), 7000);
+  };
   const toggleSubtitle = () => {
     const on = !look.subtitle;
     restyle({ subtitle: on });
-    if (on) {
-      setTip(t("字幕模式：滑鼠移到字幕上才會出現按鈕。拖曳上方可以移動，拉邊角可以縮放。"));
-      setTimeout(() => setTip(null), 6000);
-    } else {
-      setTip(null);
-    }
+    showTip(on ? t("字幕模式：滑鼠移到字幕上才會出現按鈕。拖曳上方可以移動，拉邊角可以縮放。") : null);
   };
+  const togglePassthrough = () => {
+    const on = !lookRef.current.passthrough;
+    // Pass-through belongs to subtitle mode, so switching it on (from the tray too) enters it.
+    restyle(on ? { passthrough: true, subtitle: true } : { passthrough: false });
+    showTip(!on ? null : PEEK_KEY
+      ? t("滑鼠穿透：點擊會直接穿過字幕。按住 {key} 把滑鼠移到字幕上，按鈕就會出現。", { key: PEEK_KEY })
+      : t("滑鼠穿透：點擊會直接穿過字幕。要使用按鈕，從系統匣選單關閉滑鼠穿透。"));
+  };
+  const togglePassthroughRef = useRef(togglePassthrough);
+  togglePassthroughRef.current = togglePassthrough;
+  // Clicks pass through only while captions run in subtitle mode; a stopped bar takes them again.
+  const through = look.subtitle && look.passthrough && running;
   // Floating controls hide while the mouse is away, but only while captions run: a stopped or
   // empty bar keeps them, so a see-through window never leaves nothing to click.
   const autohide = floating(look) && running;
+
+  useEffect(() => {
+    invoke("live_passthrough", { on: through }).catch(() => {});
+    if (!through) setPeek(false);
+  }, [through]);
   const color = textColor(look);
   const customColor = !COLORS.some((c) => c.id === look.color);
   // Subtitle mode shows one sentence at a time, like video subtitles: the one being translated, or
@@ -258,7 +287,7 @@ export function Live() {
   return (
     <div
       className={`live${look.subtitle ? " subtitle" : ""}${outlined(look) ? " outlined" : ""}${floating(look) ? " floating" : ""}`
-        + `${autohide ? " autohide" : ""}${look.original ? "" : " no-original"}`}
+        + `${autohide ? " autohide" : ""}${through ? " through" : ""}${peek ? " peek" : ""}${look.original ? "" : " no-original"}`}
       style={{ "--lv-scale": look.scale, "--lv-bg": `${background(look)}%`, ...(color ? { "--lv-color": color } : {}) } as React.CSSProperties}
     >
       {/* Controls. Over a see-through background they float above the captions and show only while
@@ -268,9 +297,6 @@ export function Live() {
         <span className={`lv-dot s-${state}`} aria-hidden />
         <span className="lv-state" data-tauri-drag-region>{t(STATE_LABEL[state])}</span>
         {startedAt && <span className="lv-clock num" title={t("已開啟時間，Live 會持續計費")}>{clock(elapsed)}</span>}
-        {running && info?.label && (
-          <span className="lv-model" title={t("正在使用 {label}", { label: info.label })} data-tauri-drag-region>{info.label.replace(/^\S+ · /, "")}</span>
-        )}
         <span className="lv-meter" aria-label={t("音量")}><i style={{ width: `${Math.round(level * 100)}%` }} /></span>
         <span className="grow" data-tauri-drag-region />
         <div className="lv-sources" role="group" aria-label={t("聲音來源")}>
@@ -306,6 +332,19 @@ export function Live() {
           className={`btn lv-look-btn${look.subtitle ? " on" : ""}`} aria-pressed={look.subtitle} aria-label={t("字幕模式")}
           onClick={toggleSubtitle} title={t("字幕模式：只留最新的字幕疊在畫面上，可以直接當影片字幕")}
         >CC</button>
+        {look.subtitle && (
+          <button
+            className={`btn lv-look-btn${look.passthrough ? " on" : ""}`} aria-pressed={look.passthrough} aria-label={t("滑鼠穿透")}
+            onClick={togglePassthrough}
+            title={PEEK_KEY
+              ? t("滑鼠穿透：點擊會穿過字幕，點到後面的影片。按住 {key} 移到字幕上可以叫出按鈕", { key: PEEK_KEY })
+              : t("滑鼠穿透：點擊會穿過字幕，點到後面的影片。從系統匣選單可以關閉")}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 1.5v11.2l3-2.9 2 4.7 2-.9-2-4.6h4.2L3 1.5Z" fill="currentColor" />
+            </svg>
+          </button>
+        )}
         <button
           className={`btn lv-look-btn${lookOpen ? " on" : ""}`} aria-expanded={lookOpen} aria-label={t("外觀")}
           onClick={() => setLookOpen((v) => !v)} title={t("字幕大小、顏色和背景透明度")}
